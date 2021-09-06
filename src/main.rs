@@ -1,9 +1,12 @@
+use std::process::exit;
+
 use ariadne::{Label, Report, ReportKind, Source};
 use common::Error;
 
 mod ast;
 mod common;
 mod lexer;
+mod parser;
 mod token;
 
 fn report_error_and_exit(src: &str, err: Error) {
@@ -12,6 +15,8 @@ fn report_error_and_exit(src: &str, err: Error) {
         .finish()
         .print(Source::from(src))
         .unwrap();
+
+    exit(1);
 }
 
 fn main() {
@@ -32,12 +37,23 @@ fn main() {
         }
     "#;
 
-    match lexer::lex(demo_src) {
-        Ok(tokens) => {
-            dbg!(&tokens);
-        }
+    let tokens = match lexer::lex(demo_src) {
+        Ok(tokens) => tokens,
         Err(err) => {
             report_error_and_exit(demo_src, err);
+            unreachable!()
         }
-    }
+    };
+
+    dbg!(&tokens);
+
+    let stmts = match parser::parse(&tokens) {
+        Ok(stmts) => stmts,
+        Err(err) => {
+            report_error_and_exit(demo_src, err);
+            unreachable!()
+        }
+    };
+
+    dbg!(&stmts);
 }

@@ -3,7 +3,7 @@ use derive_more::{From, TryInto};
 use crate::{common::Span, token};
 
 #[derive(Debug, Clone)]
-pub enum PrimitiveType {
+pub enum PrimType {
     Int(u8),
     UInt(u8),
     Float(u8),
@@ -12,7 +12,7 @@ pub enum PrimitiveType {
 }
 
 #[derive(Debug, Clone)]
-pub struct FunctionType {
+pub struct FunType {
     pub parameters: Vec<Type>,
     pub returns: Box<Type>,
 }
@@ -23,7 +23,7 @@ pub struct StructType {
 }
 
 #[derive(Debug, Clone)]
-pub struct PointerType {
+pub struct PtrType {
     pub eltype: Box<Type>,
 }
 
@@ -39,18 +39,25 @@ pub struct SliceType {
 
 #[derive(Debug, Clone)]
 pub struct SumType {
-    pub varants: Vec<Type>,
+    pub variants: Vec<Type>,
 }
 
 #[derive(Debug, Clone, From, TryInto)]
 pub enum TypeKind {
-    Primitive(PrimitiveType),
-    Function(FunctionType),
+    Prim(PrimType),
+    Fun(FunType),
     Struct(StructType),
-    Pointer(PointerType),
+    Ptr(PtrType),
     Box(BoxType),
     Slice(SliceType),
     Sum(SumType),
+
+    // arbitrary named type. can resolve to any kind of type (currently
+    // only struct and primitive types, but once aliases are introduced)
+    Named {
+        source: Option<token::Token>,
+        name: token::Token,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -65,8 +72,8 @@ pub struct FunDecl {
     pub exported: bool,
     pub ident: token::Token,
     pub parameters: Vec<(token::Token, Type)>,
-    pub return_type: Type,
-    pub block: BlockStmt,
+    pub return_type: Option<Type>,
+    pub block: Option<BlockStmt>,
 }
 
 #[derive(Debug, Clone)]
@@ -79,20 +86,21 @@ pub struct StructDecl {
 #[derive(Debug, Clone)]
 pub struct ImportDecl {
     pub path: token::Token,
-    pub ident: Option<token::Token>,
+    pub alias: Option<token::Token>,
 }
 
 #[derive(Debug, Clone)]
 pub struct VarStmt {
     pub ident: token::Token,
-    pub typ: Type,
-    pub init: Expr,
+    pub typ: Option<Type>,
+    pub init: Option<Expr>,
 }
 
 #[derive(Debug, Clone)]
 pub struct IfStmt {
     pub condition: Expr,
     pub if_block: BlockStmt,
+    pub elif_stmts: Vec<(Expr, BlockStmt)>,
     pub else_block: Option<BlockStmt>,
 }
 
@@ -104,7 +112,7 @@ pub struct WhileStmt {
 
 #[derive(Debug, Clone)]
 pub struct ReturnStmt {
-    pub value: Expr,
+    pub value: Option<Expr>,
 }
 
 #[derive(Debug, Clone)]
@@ -119,6 +127,10 @@ pub struct BlockStmt {
 
 #[derive(Debug, Clone, From, TryInto)]
 pub enum StmtKind {
+    Fun(FunDecl),
+    Struct(StructDecl),
+    Import(ImportDecl),
+
     Var(VarStmt),
     If(IfStmt),
     While(WhileStmt),
@@ -130,7 +142,6 @@ pub enum StmtKind {
 #[derive(Debug, Clone)]
 pub struct Stmt {
     pub kind: StmtKind,
-    pub span: Span,
     pub pointer: Span,
 }
 
@@ -167,7 +178,7 @@ pub struct IdxExpr {
 #[derive(Debug, Clone)]
 pub struct AsExpr {
     pub expr: Box<Expr>,
-    pub target: Type,
+    pub typ: Type,
 }
 
 #[derive(Debug, Clone)]
@@ -178,8 +189,8 @@ pub struct IsExpr {
 
 #[derive(Debug, Clone)]
 pub struct StructLit {
-    pub ident: token::Token,
-    pub inits: Vec<Expr>,
+    pub typ: Type,
+    pub inits: Vec<(token::Token, Expr)>,
 }
 
 #[derive(Debug, Clone)]

@@ -106,85 +106,87 @@ impl Lexer {
         }
 
         let lexeme = &self.source[self.start..self.current];
-        Ok(self.create_token(
-            if let Some(keyword_kind) =
-                TokenKind::from_keyword_str(&lexeme.iter().collect::<String>())
-            {
+        let keyword_str = lexeme.iter().collect::<String>();
+
+        let token = self.create_token(
+            if let Some(keyword_kind) = TokenKind::from_keyword_str(&keyword_str) {
                 keyword_kind
             } else {
                 TokenKind::Ident
             },
-        ))
+        );
+
+        Ok(token)
     }
 
-    pub fn lex_token(&mut self, prev_token: Option<&Token>) -> Result<Token, Error> {
+    pub fn lex_token(&mut self, prev_token: Option<&Token>) -> Result<Option<Token>, Error> {
         let c = self.peek()?;
         self.current += 1;
 
         let token = match c {
-            '(' => Ok(self.create_token(TokenKind::LeftParen)),
-            ')' => Ok(self.create_token(TokenKind::RightParen)),
-            '{' => Ok(self.create_token(TokenKind::LeftBrace)),
-            '}' => Ok(self.create_token(TokenKind::RightBrace)),
-            '[' => Ok(self.create_token(TokenKind::LeftBracket)),
-            ']' => Ok(self.create_token(TokenKind::RightBracket)),
-            ',' => Ok(self.create_token(TokenKind::Comma)),
-            '.' => Ok(self.create_token(TokenKind::Dot)),
-            ':' => Ok(self.create_token(TokenKind::Colon)),
-            '~' => Ok(self.create_token(TokenKind::Tilde)),
+            '(' => Ok(Some(self.create_token(TokenKind::LeftParen))),
+            ')' => Ok(Some(self.create_token(TokenKind::RightParen))),
+            '{' => Ok(Some(self.create_token(TokenKind::LeftBrace))),
+            '}' => Ok(Some(self.create_token(TokenKind::RightBrace))),
+            '[' => Ok(Some(self.create_token(TokenKind::LeftBracket))),
+            ']' => Ok(Some(self.create_token(TokenKind::RightBracket))),
+            ',' => Ok(Some(self.create_token(TokenKind::Comma))),
+            '.' => Ok(Some(self.create_token(TokenKind::Dot))),
+            ':' => Ok(Some(self.create_token(TokenKind::Colon))),
+            '~' => Ok(Some(self.create_token(TokenKind::Tilde))),
             '&' => {
                 if self.peek()? == '&' {
                     self.advance();
-                    Ok(self.create_token(TokenKind::AndAnd))
+                    Ok(Some(self.create_token(TokenKind::AndAnd)))
                 } else {
-                    Ok(self.create_token(TokenKind::And))
+                    Ok(Some(self.create_token(TokenKind::And)))
                 }
             }
             '|' => {
                 if self.peek()? == '|' {
                     self.advance();
-                    Ok(self.create_token(TokenKind::OrOr))
+                    Ok(Some(self.create_token(TokenKind::OrOr)))
                 } else {
-                    Ok(self.create_token(TokenKind::Or))
+                    Ok(Some(self.create_token(TokenKind::Or)))
                 }
             }
             '=' => {
                 if self.peek()? == '=' {
                     self.advance();
-                    Ok(self.create_token(TokenKind::EqualEqual))
+                    Ok(Some(self.create_token(TokenKind::EqualEqual)))
                 } else {
-                    Ok(self.create_token(TokenKind::Equal))
+                    Ok(Some(self.create_token(TokenKind::Equal)))
                 }
             }
             '!' => {
                 if self.peek()? == '=' {
                     self.advance();
-                    Ok(self.create_token(TokenKind::BangEqual))
+                    Ok(Some(self.create_token(TokenKind::BangEqual)))
                 } else {
-                    Ok(self.create_token(TokenKind::Bang))
+                    Ok(Some(self.create_token(TokenKind::Bang)))
                 }
             }
             '<' => {
                 if self.peek()? == '=' {
                     self.advance();
-                    Ok(self.create_token(TokenKind::LesserEqual))
+                    Ok(Some(self.create_token(TokenKind::LesserEqual)))
                 } else {
-                    Ok(self.create_token(TokenKind::Lesser))
+                    Ok(Some(self.create_token(TokenKind::Lesser)))
                 }
             }
             '>' => {
                 if self.peek()? == '=' {
                     self.advance();
-                    Ok(self.create_token(TokenKind::GreaterEqual))
+                    Ok(Some(self.create_token(TokenKind::GreaterEqual)))
                 } else {
-                    Ok(self.create_token(TokenKind::Greater))
+                    Ok(Some(self.create_token(TokenKind::Greater)))
                 }
             }
-            '^' => Ok(self.create_token(TokenKind::Caret)),
-            '-' => Ok(self.create_token(TokenKind::Minus)),
-            '+' => Ok(self.create_token(TokenKind::Plus)),
-            '*' => Ok(self.create_token(TokenKind::Star)),
-            '%' => Ok(self.create_token(TokenKind::Percent)),
+            '^' => Ok(Some(self.create_token(TokenKind::Caret))),
+            '-' => Ok(Some(self.create_token(TokenKind::Minus))),
+            '+' => Ok(Some(self.create_token(TokenKind::Plus))),
+            '*' => Ok(Some(self.create_token(TokenKind::Star))),
+            '%' => Ok(Some(self.create_token(TokenKind::Percent))),
 
             '/' => {
                 if self.peek()? == '/' {
@@ -192,34 +194,53 @@ impl Lexer {
                     while !self.at_end() && self.peek()? != '\n' {
                         self.advance();
                     }
-
-                    if self.at_end() {
-                        Ok(self.create_token(TokenKind::Eof))
-                    } else {
-                        self.lex_token(prev_token)
-                    }
+                    Ok(None)
                 } else {
-                    Ok(self.create_token(TokenKind::Slash))
+                    Ok(Some(self.create_token(TokenKind::Slash)))
                 }
             }
 
-            ';' => Ok(self.create_token(TokenKind::Semicolon)),
+            ';' => Ok(Some(self.create_token(TokenKind::Semicolon))),
 
-            '"' => self.lex_string(),
+            '"' => Ok(Some(self.lex_string()?)),
+
+            '\n' => {
+                if let Some(prev_token) = prev_token {
+                    if prev_token.kind != TokenKind::Semicolon
+                        && (prev_token.kind == TokenKind::Ident
+                            || prev_token.kind == TokenKind::RightParen
+                            || prev_token.kind == TokenKind::RightBrace
+                            || prev_token.kind == TokenKind::RightBracket
+                            || prev_token.kind == TokenKind::Return
+                            || prev_token.kind == TokenKind::Int
+                            || prev_token.kind == TokenKind::Float
+                            || prev_token.kind == TokenKind::True
+                            || prev_token.kind == TokenKind::False
+                            || prev_token.kind == TokenKind::Caret
+                            || prev_token.kind == TokenKind::String)
+                    {
+                        Ok(Some(self.create_token(TokenKind::Semicolon)))
+                    } else {
+                        Ok(None)
+                    }
+                } else {
+                    Ok(None)
+                }
+            }
 
             _ if c.is_whitespace() => {
                 if self.at_end() {
-                    Ok(self.create_token(TokenKind::Eof))
+                    Ok(Some(self.create_token(TokenKind::Eof)))
                 } else {
-                    self.lex_token(prev_token)
+                    Ok(None)
                 }
             }
 
             _ => {
                 if c.is_digit(10) {
-                    self.lex_number()
+                    Ok(Some(self.lex_number()?))
                 } else if c.is_alphabetic() {
-                    self.lex_ident()
+                    Ok(Some(self.lex_ident()?))
                 } else {
                     Err(Error {
                         message: "unexpected character".into(),
@@ -239,7 +260,9 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Error> {
     let mut tokens = Vec::new();
 
     while !lexer.at_end() {
-        tokens.push(lexer.lex_token(tokens.last())?)
+        if let Some(token) = lexer.lex_token(tokens.last())? {
+            tokens.push(token)
+        }
     }
 
     Ok(tokens)

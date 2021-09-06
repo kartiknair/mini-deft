@@ -85,6 +85,10 @@ impl TokenKind {
         }
     }
 
+    pub fn is_prefix_op(&self) -> bool {
+        matches!(*self, Self::Minus | Self::Bang | Self::And)
+    }
+
     pub fn is_binary_op(&self) -> bool {
         *self > Self::Equal && *self < Self::OrOr
     }
