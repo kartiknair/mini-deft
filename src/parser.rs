@@ -187,32 +187,22 @@ impl<'a> Parser<'a> {
 
                     typ = Some(ast::Type {
                         span: ident.span.clone(),
-                        kind: ast::TypeKind::Named {
+                        kind: ast::NamedType {
                             source: Some(ident),
                             name: segment,
-                        },
+                        }
+                        .into(),
                     });
                 } else {
                     typ = Some(ast::Type {
                         span: ident.span.clone(),
-                        kind: ast::TypeKind::Named {
+                        kind: ast::NamedType {
                             source: None,
                             name: ident,
-                        },
+                        }
+                        .into(),
                     });
                 }
-            }
-            TokenKind::Star => {
-                let ptr_type_start = self.peek()?.span.start;
-                self.current += 1;
-
-                let eltype = self.parse_type()?;
-                typ = Some(ast::Type {
-                    span: ptr_type_start..eltype.span.end,
-                    kind: ast::TypeKind::Ptr(ast::PtrType {
-                        eltype: Box::new(eltype),
-                    }),
-                });
             }
             TokenKind::Tilde => {
                 let box_type_start = self.peek()?.span.start;
@@ -364,10 +354,11 @@ impl<'a> Parser<'a> {
                         kind: ast::StructLit {
                             typ: ast::Type {
                                 span: token.span.clone(),
-                                kind: ast::TypeKind::Named {
+                                kind: ast::NamedType {
                                     source: None,
                                     name: token.clone(),
-                                },
+                                }
+                                .into(),
                             },
                             inits,
                         }
@@ -613,7 +604,6 @@ impl<'a> Parser<'a> {
                 Ok(ast::Stmt {
                     kind: ast::StmtKind::Fun(ast::FunDecl {
                         external: false,
-                        exported: false,
                         ident,
                         parameters,
                         return_type,
@@ -649,11 +639,7 @@ impl<'a> Parser<'a> {
                 }
 
                 Ok(ast::Stmt {
-                    kind: ast::StmtKind::Struct(ast::StructDecl {
-                        exported: false,
-                        ident,
-                        members,
-                    }),
+                    kind: ast::StmtKind::Struct(ast::StructDecl { ident, members }),
                     pointer: token.span.clone(),
                 })
             }
@@ -746,44 +732,6 @@ impl<'a> Parser<'a> {
                     kind: ast::StmtKind::Return(ast::ReturnStmt { value }),
                     pointer: token.span.clone(),
                 })
-            }
-            TokenKind::Import => {
-                self.current += 1;
-
-                let path = self
-                    .expect(TokenKind::String, "expect string with path to file")?
-                    .clone();
-                let alias = if self.peek()?.kind == TokenKind::Semicolon {
-                    None
-                } else {
-                    let ident = self
-                        .expect(TokenKind::Ident, "expected identifier as import alias")?
-                        .clone();
-                    Some(ident)
-                };
-
-                self.expect(TokenKind::Semicolon, "expect ';' after import statement")?;
-
-                Ok(ast::Stmt {
-                    kind: ast::StmtKind::Import(ast::ImportDecl { path, alias }),
-                    pointer: token.span.clone(),
-                })
-            }
-            TokenKind::Export => {
-                self.current += 1;
-
-                let mut decl = self.parse_stmt()?;
-                match &mut decl.kind {
-                    ast::StmtKind::Struct(struct_decl) => {
-                        struct_decl.exported = true;
-                        Ok(decl)
-                    }
-                    ast::StmtKind::Fun(fun_decl) => {
-                        fun_decl.exported = true;
-                        Ok(decl)
-                    }
-                    _ => Err(self.error_at_current("cannot export non-declaration statement")),
-                }
             }
             TokenKind::LeftBrace => {
                 self.current += 1;

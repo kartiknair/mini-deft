@@ -1,4 +1,4 @@
-use crate::common::Span;
+use crate::common::{Error, Span};
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub enum TokenKind {
@@ -20,8 +20,6 @@ pub enum TokenKind {
     While,
     As,
     Is,
-    Import,
-    Export,
     Extern,
     Impl,
 
@@ -37,7 +35,6 @@ pub enum TokenKind {
     Dot,
     Colon,
     Caret,
-    And,
     Or,
     Bang,
     Tilde,
@@ -77,8 +74,6 @@ impl TokenKind {
             "while" => Some(TokenKind::While),
             "as" => Some(TokenKind::As),
             "is" => Some(TokenKind::Is),
-            "import" => Some(TokenKind::Import),
-            "export" => Some(TokenKind::Export),
             "extern" => Some(TokenKind::Extern),
             "impl" => Some(TokenKind::Impl),
             _ => None,
@@ -86,7 +81,7 @@ impl TokenKind {
     }
 
     pub fn is_prefix_op(&self) -> bool {
-        matches!(*self, Self::Minus | Self::Bang | Self::And)
+        matches!(*self, Self::Minus | Self::Bang)
     }
 
     pub fn is_binary_op(&self) -> bool {
@@ -102,4 +97,13 @@ impl TokenKind {
 pub struct Token {
     pub kind: TokenKind,
     pub span: Span,
+}
+
+impl Token {
+    pub fn error_at(&self, message: &str) -> Error {
+        Error {
+            span: self.span.clone(),
+            message: message.into(),
+        }
+    }
 }

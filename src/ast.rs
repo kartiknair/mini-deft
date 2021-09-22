@@ -1,8 +1,13 @@
+use std::{
+    fs, io,
+    path::{Path, PathBuf},
+};
+
 use derive_more::{From, TryInto};
 
 use crate::{common::Span, token};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum PrimType {
     Int(u8),
     UInt(u8),
@@ -11,14 +16,21 @@ pub enum PrimType {
     Bool,
 }
 
+impl PrimType {
+    pub fn is_numeric(&self) -> bool {
+        !matches!(self, Self::Str | Self::Bool)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct FunType {
     pub parameters: Vec<Type>,
-    pub returns: Box<Type>,
+    pub returns: Option<Box<Type>>,
 }
 
 #[derive(Debug, Clone)]
 pub struct StructType {
+    pub name: String,
     pub members: Vec<(String, Type)>,
 }
 
@@ -42,22 +54,43 @@ pub struct SumType {
     pub variants: Vec<Type>,
 }
 
+// arbitrary named type. can resolve to any kind of type (currently
+// only struct and primitive types, but once aliases are introduced)
+#[derive(Debug, Clone)]
+pub struct NamedType {
+    pub source: Option<token::Token>,
+    pub name: token::Token,
+}
+
 #[derive(Debug, Clone, From, TryInto)]
+#[try_into(ref, ref_mut)]
 pub enum TypeKind {
     Prim(PrimType),
     Fun(FunType),
     Struct(StructType),
-    Ptr(PtrType),
     Box(BoxType),
     Slice(SliceType),
     Sum(SumType),
+    Named(NamedType),
+}
 
-    // arbitrary named type. can resolve to any kind of type (currently
-    // only struct and primitive types, but once aliases are introduced)
-    Named {
-        source: Option<token::Token>,
-        name: token::Token,
-    },
+impl TypeKind {
+    pub fn is_copyable(&self) -> bool {
+        match self {
+            Self::Prim(prim_type) => !matches!(prim_type, PrimType::Str),
+            Self::Fun(_) => false,
+            Self::Struct(struct_type) => struct_type
+                .members
+                .iter()
+                .any(|(_, member_type)| !member_type.kind.is_copyable()),
+            Self::Box(_) => false,
+            Self::Slice(_) => false,
+            Self::Sum(_) => false,
+            Self::Named(_) => {
+                panic!("Named type must be resolved before reaching `is_copyable()`.")
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -69,7 +102,6 @@ pub struct Type {
 #[derive(Debug, Clone)]
 pub struct FunDecl {
     pub external: bool,
-    pub exported: bool,
     pub ident: token::Token,
     pub parameters: Vec<(token::Token, Type)>,
     pub return_type: Option<Type>,
@@ -78,15 +110,8 @@ pub struct FunDecl {
 
 #[derive(Debug, Clone)]
 pub struct StructDecl {
-    pub exported: bool,
     pub ident: token::Token,
     pub members: Vec<(token::Token, Type)>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ImportDecl {
-    pub path: token::Token,
-    pub alias: Option<token::Token>,
 }
 
 #[derive(Debug, Clone)]
@@ -129,7 +154,6 @@ pub struct BlockStmt {
 pub enum StmtKind {
     Fun(FunDecl),
     Struct(StructDecl),
-    Import(ImportDecl),
 
     Var(VarStmt),
     If(IfStmt),
@@ -217,9 +241,43 @@ pub enum ExprKind {
     Lit(Lit),
 }
 
+impl ExprKind {
+    pub fn is_lvalue(&self) -> bool {
+        match self {
+            Self::Var(_) => true,
+            Self::Binary(binary_expr) => binary_expr.op.kind == token::TokenKind::Dot,
+            _ => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Expr {
     pub kind: ExprKind,
     pub span: Span,
     pub typ: Option<Type>,
+}
+
+#[derive(Debug, Clone)]
+pub struct File {
+    pub path: PathBuf,
+    pub source: String,
+    pub stmts: Vec<Stmt>,
+}
+
+impl File {
+    pub fn new<P: AsRef<Path>>(path: P) -> Result<Self, io::Error> {
+        let path = path.as_ref().to_path_buf();
+        let source = fs::read_to_string(&path)?;
+
+        Ok(Self {
+            path,
+            source,
+            stmts: Vec::new(),
+        })
+    }
+
+    pub fn lexeme(&self, span: &Span) -> &str {
+        &self.source[span.clone()]
+    }
 }

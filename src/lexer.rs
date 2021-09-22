@@ -139,7 +139,10 @@ impl Lexer {
                     self.advance();
                     Ok(Some(self.create_token(TokenKind::AndAnd)))
                 } else {
-                    Ok(Some(self.create_token(TokenKind::And)))
+                    Err(Error {
+                        span: self.get_span(),
+                        message: "expected '&' after '&'".into(),
+                    })
                 }
             }
             '|' => {
@@ -262,6 +265,15 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Error> {
     while !lexer.at_end() {
         if let Some(token) = lexer.lex_token(tokens.last())? {
             tokens.push(token)
+        }
+    }
+
+    if let Some(last_token) = tokens.last() {
+        if last_token.kind != TokenKind::Eof {
+            tokens.push(Token {
+                kind: TokenKind::Eof,
+                span: 0..0,
+            });
         }
     }
 

@@ -1,0 +1,13 @@
+extern fun printi32(n i32)
+
+fun fib(n i32) i32 {
+    if n1 < 2 {
+        return ""
+    }
+
+    return fib(n-1) + fib(n-2)
+}
+
+fun main() {
+    printi32(fib(20))
+}

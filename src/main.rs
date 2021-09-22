@@ -1,15 +1,16 @@
-use std::process::exit;
+use std::{env, process::exit};
 
 use ariadne::{Label, Report, ReportKind, Source};
 use common::Error;
 
+mod analyzer;
 mod ast;
 mod common;
 mod lexer;
 mod parser;
 mod token;
 
-fn report_error_and_exit(src: &str, err: Error) {
+fn report_error_and_exit(src: &str, err: Error) -> ! {
     Report::build(ReportKind::Error, (), err.span.start)
         .with_label(Label::new(err.span).with_message(err.message))
         .finish()
@@ -20,40 +21,43 @@ fn report_error_and_exit(src: &str, err: Error) {
 }
 
 fn main() {
-    let demo_src = r#"
-        extern fun printi32(n i32)
+    let args: Vec<String> = env::args().collect();
 
-        fun fib(n i32) i32 {
-            if n < 2 {
-                return ""
-            }
+    if args.len() != 2 {
+        eprintln!(
+            r#"
+Usage:
 
-            return fib(n-1) + fib(n-2)
+{} [filename]
+
+Arguments:
+
+filename = Path to the file that you would like to compile
+"#,
+            args[0]
+        );
+        exit(1);
+    }
+
+    let mut file = match ast::File::new(&args[1]) {
+        Ok(file) => file,
+        Err(err) => {
+            eprintln!("{}", err.to_string());
+            exit(1);
         }
+    };
 
-        fun main() {
-            printi32(fib(20))
-            retEarly()
-        }
-    "#;
-
-    let tokens = match lexer::lex(demo_src) {
+    let tokens = match lexer::lex(&file.source) {
         Ok(tokens) => tokens,
-        Err(err) => {
-            report_error_and_exit(demo_src, err);
-            unreachable!()
-        }
+        Err(err) => report_error_and_exit(&file.source, err),
     };
 
-    dbg!(&tokens);
-
-    let stmts = match parser::parse(&tokens) {
+    file.stmts = match parser::parse(&tokens) {
         Ok(stmts) => stmts,
-        Err(err) => {
-            report_error_and_exit(demo_src, err);
-            unreachable!()
-        }
+        Err(err) => report_error_and_exit(&file.source, err),
     };
 
-    dbg!(&stmts);
+    if let Err(err) = analyzer::analyze_mut(&mut file) {
+        report_error_and_exit(&file.source, err)
+    };
 }
