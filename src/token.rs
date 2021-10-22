@@ -20,6 +20,8 @@ pub enum TokenKind {
     While,
     As,
     Is,
+    Import,
+    Export,
     Extern,
     Impl,
 
@@ -74,6 +76,8 @@ impl TokenKind {
             "while" => Some(TokenKind::While),
             "as" => Some(TokenKind::As),
             "is" => Some(TokenKind::Is),
+            "import" => Some(TokenKind::Import),
+            "export" => Some(TokenKind::Export),
             "extern" => Some(TokenKind::Extern),
             "impl" => Some(TokenKind::Impl),
             _ => None,

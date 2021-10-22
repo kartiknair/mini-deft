@@ -1,0 +1,16 @@
+import "math.dft"
+import "point.dft" pnt
+
+extern fun printf64(n f64)
+
+fun main() {
+    var n1 = 23.34
+    var n2 = 89.42
+    var sum = math.sum(n1, n2)
+    printf64(sum)
+
+    var p1 = pnt.Point{
+        x: n1,
+        y: 45,
+    }
+}

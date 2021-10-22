@@ -25,11 +25,6 @@ struct OpInfo {
 impl TokenKind {
     fn op_info(&self) -> OpInfo {
         match self {
-            Self::Dot => OpInfo {
-                prec: 7,
-                assoc: Assoc::Ltr,
-            },
-
             Self::Percent => OpInfo {
                 prec: 6,
                 assoc: Assoc::Ltr,
@@ -326,47 +321,20 @@ impl<'a> Parser<'a> {
             }
             TokenKind::Ident => {
                 self.current += 1;
-                if self.peek()?.kind == TokenKind::LeftBrace {
-                    self.current += 1;
 
-                    let mut inits = Vec::new();
-                    if self.peek()?.kind != TokenKind::RightBrace {
-                        loop {
-                            let init_ident = self
-                                .expect(TokenKind::Ident, "expect initializer name")?
-                                .clone();
-                            let init_expr = self.parse_expr()?;
-                            inits.push((init_ident, init_expr));
-
-                            if self.peek()?.kind != TokenKind::Comma {
-                                break;
-                            } else {
-                                self.current += 1;
+                expr = if self.peek()?.kind == TokenKind::LeftBrace {
+                    Some(
+                        self.parse_struct_lit(ast::Type {
+                            span: token.span.clone(),
+                            kind: ast::NamedType {
+                                source: None,
+                                name: token.clone(),
                             }
-                        }
-                    }
-
-                    let rbrace_token =
-                        self.expect(TokenKind::RightBrace, "unclosed struct literal")?;
-
-                    expr = Some(ast::Expr {
-                        span: token.span.start..rbrace_token.span.end,
-                        kind: ast::StructLit {
-                            typ: ast::Type {
-                                span: token.span.clone(),
-                                kind: ast::NamedType {
-                                    source: None,
-                                    name: token.clone(),
-                                }
-                                .into(),
-                            },
-                            inits,
-                        }
-                        .into(),
-                        typ: None,
-                    })
+                            .into(),
+                        })?,
+                    )
                 } else {
-                    expr = Some(ast::Expr {
+                    Some(ast::Expr {
                         span: token.span.clone(),
                         kind: ast::VarExpr {
                             ident: token.clone(),
@@ -374,7 +342,7 @@ impl<'a> Parser<'a> {
                         .into(),
                         typ: None,
                     })
-                }
+                };
             }
             _ if token.kind.is_prefix_op() => {
                 self.current += 1;
@@ -400,10 +368,10 @@ impl<'a> Parser<'a> {
 
         while self.peek()?.kind == TokenKind::LeftParen
             || self.peek()?.kind == TokenKind::LeftBracket
-            || self.peek()?.kind == TokenKind::Dot
             || self.peek()?.kind == TokenKind::As
             || self.peek()?.kind == TokenKind::Is
             || self.peek()?.kind == TokenKind::Caret
+            || self.peek()?.kind == TokenKind::Dot
         {
             match self.peek()?.kind {
                 TokenKind::LeftParen => {
@@ -494,11 +462,85 @@ impl<'a> Parser<'a> {
                         typ: None,
                     }
                 }
+                TokenKind::Dot => {
+                    let dot_token = self.peek()?.clone();
+
+                    self.current += 1;
+                    let ident = self
+                        .expect(
+                            TokenKind::Ident,
+                            "expect identifier after `.` in get expression",
+                        )?
+                        .clone();
+
+                    if self.peek()?.kind == TokenKind::LeftBrace {
+                        // We've actually got a `module.StructType{}` struct literal
+                        expr = self.parse_struct_lit(ast::Type {
+                            span: 0..0,
+                            kind: ast::NamedType {
+                                name: ident,
+                                source: if let ast::ExprKind::Var(var_expr) = expr.kind {
+                                    Some(var_expr.ident)
+                                } else {
+                                    unreachable!()
+                                },
+                            }
+                            .into(),
+                        })?;
+                    } else {
+                        expr = ast::Expr {
+                            span: expr.span.start..ident.span.end,
+                            kind: ast::BinaryExpr {
+                                left: Box::new(expr),
+                                right: Box::new(ast::Expr {
+                                    span: ident.span.clone(),
+                                    kind: ast::VarExpr { ident }.into(),
+                                    typ: None,
+                                }),
+                                op: dot_token,
+                            }
+                            .into(),
+                            typ: None,
+                        }
+                    }
+                }
                 _ => {}
             }
         }
 
         Ok(expr)
+    }
+
+    fn parse_struct_lit(&mut self, typ: ast::Type) -> Result<ast::Expr, Error> {
+        if self.peek()?.kind == TokenKind::LeftBrace {
+            self.current += 1;
+
+            let mut inits = Vec::new();
+            while self.peek()?.kind != TokenKind::RightBrace {
+                let init_ident = self
+                    .expect(TokenKind::Ident, "expect initializer name")?
+                    .clone();
+                self.expect(TokenKind::Colon, "expect ':' after initializer name")?;
+                let init_expr = self.parse_expr()?;
+                inits.push((init_ident, init_expr));
+
+                if self.peek()?.kind != TokenKind::Comma {
+                    break;
+                } else {
+                    self.current += 1;
+                }
+            }
+
+            let rbrace_token = self.expect(TokenKind::RightBrace, "unclosed struct literal")?;
+
+            Ok(ast::Expr {
+                span: typ.span.start..rbrace_token.span.end,
+                kind: ast::StructLit { typ, inits }.into(),
+                typ: None,
+            })
+        } else {
+            Err(self.error_at_current("expected '{' after type in struct literal"))
+        }
     }
 
     fn parse_prec_expr(&mut self, mut lhs: ast::Expr, min_prec: u8) -> Result<ast::Expr, Error> {
@@ -546,6 +588,9 @@ impl<'a> Parser<'a> {
         match &token.kind {
             TokenKind::Extern => {
                 self.current += 1;
+                if self.peek()?.kind != TokenKind::Fun {
+                    return Err(self.error_at_current("only function declarations can be external"));
+                }
 
                 let mut decl = self.parse_stmt()?;
                 if let ast::StmtKind::Fun(fun_decl) = &mut decl.kind {
@@ -555,7 +600,7 @@ impl<'a> Parser<'a> {
                     }
                     Ok(decl)
                 } else {
-                    Err(self.error_at_current("only function declarations can be external"))
+                    panic!("internal-error: parser should have validated function declaration")
                 }
             }
             TokenKind::Impl => {
@@ -603,6 +648,7 @@ impl<'a> Parser<'a> {
 
                 Ok(ast::Stmt {
                     kind: ast::StmtKind::Fun(ast::FunDecl {
+                        exported: false,
                         external: false,
                         ident,
                         parameters,
@@ -639,7 +685,11 @@ impl<'a> Parser<'a> {
                 }
 
                 Ok(ast::Stmt {
-                    kind: ast::StmtKind::Struct(ast::StructDecl { ident, members }),
+                    kind: ast::StmtKind::Struct(ast::StructDecl {
+                        exported: false,
+                        ident,
+                        members,
+                    }),
                     pointer: token.span.clone(),
                 })
             }
@@ -732,6 +782,44 @@ impl<'a> Parser<'a> {
                     kind: ast::StmtKind::Return(ast::ReturnStmt { value }),
                     pointer: token.span.clone(),
                 })
+            }
+            TokenKind::Import => {
+                self.current += 1;
+
+                let path = self
+                    .expect(TokenKind::String, "expect string with path to file")?
+                    .clone();
+                let alias = if self.peek()?.kind == TokenKind::Semicolon {
+                    None
+                } else {
+                    let ident = self
+                        .expect(TokenKind::Ident, "expected identifier as import alias")?
+                        .clone();
+                    Some(ident)
+                };
+
+                self.expect(TokenKind::Semicolon, "expect ';' after import statement")?;
+
+                Ok(ast::Stmt {
+                    kind: ast::StmtKind::Import(ast::ImportDecl { path, alias }),
+                    pointer: token.span.clone(),
+                })
+            }
+            TokenKind::Export => {
+                self.current += 1;
+
+                let mut decl = self.parse_stmt()?;
+                match &mut decl.kind {
+                    ast::StmtKind::Struct(struct_decl) => {
+                        struct_decl.exported = true;
+                        Ok(decl)
+                    }
+                    ast::StmtKind::Fun(fun_decl) => {
+                        fun_decl.exported = true;
+                        Ok(decl)
+                    }
+                    _ => Err(self.error_at_current("cannot export non-declaration statement")),
+                }
             }
             TokenKind::LeftBrace => {
                 self.current += 1;

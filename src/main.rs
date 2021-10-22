@@ -46,18 +46,22 @@ filename = Path to the file that you would like to compile
             exit(1);
         }
     };
+    dbg!("done reading source file");
 
     let tokens = match lexer::lex(&file.source) {
         Ok(tokens) => tokens,
         Err(err) => report_error_and_exit(&file.source, err),
     };
+    dbg!("done tokenizing");
 
     file.stmts = match parser::parse(&tokens) {
         Ok(stmts) => stmts,
         Err(err) => report_error_and_exit(&file.source, err),
     };
+    dbg!("done parsing");
 
     if let Err(err) = analyzer::analyze_mut(&mut file) {
         report_error_and_exit(&file.source, err)
     };
+    dbg!("done analyzing");
 }

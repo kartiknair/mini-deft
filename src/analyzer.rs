@@ -1,12 +1,13 @@
-use std::{borrow::Borrow, collections::HashMap, convert::TryInto, mem::discriminant};
+use std::{borrow::Borrow, collections::HashMap, convert::TryInto, mem::discriminant, path::Path};
 
-use crate::{ast, common::Error, token};
+use crate::{ast, common::Error, lexer, parser, token};
 
 #[derive(Debug)]
 struct Analyzer<'a> {
     file: &'a mut ast::File,
     namespace: HashMap<String, ast::Type>,
     typespace: HashMap<String, ast::TypeKind>,
+    imports: HashMap<String, ast::File>,
 
     within_function: Option<ast::FunDecl>,
 }
@@ -35,6 +36,7 @@ impl<'a> Analyzer<'a> {
             file,
             namespace: HashMap::new(),
             typespace,
+            imports: HashMap::new(),
 
             within_function: None,
         }
@@ -106,7 +108,21 @@ impl<'a> Analyzer<'a> {
             }
             ast::TypeKind::Named(named_type) => {
                 let lexeme = self.file.lexeme(&named_type.name.span);
-                if let Some(resolved_type) = self.typespace.get(lexeme) {
+
+                if let Some(module_ident) = &named_type.source {
+                    if let Some(resolved_type) = self.typespace.get(&format!(
+                        "{}.{}",
+                        self.file.lexeme(&module_ident.span),
+                        lexeme,
+                    )) {
+                        typ.kind = resolved_type.clone();
+                    } else {
+                        return Err(Error {
+                            message: "unknown imported type".into(),
+                            span: named_type.name.span.clone(),
+                        });
+                    }
+                } else if let Some(resolved_type) = self.typespace.get(lexeme) {
                     typ.kind = resolved_type.clone();
                 } else {
                     return Err(Error {
@@ -123,6 +139,9 @@ impl<'a> Analyzer<'a> {
 
     fn analyze_stmt(&mut self, stmt: &mut ast::Stmt) -> Result<(), Error> {
         match &mut stmt.kind {
+            ast::StmtKind::Import(_) => {
+                // Nothing to do
+            }
             ast::StmtKind::Fun(fun_decl) => {
                 if self.within_function.is_some() {
                     return Err(fun_decl
@@ -183,6 +202,7 @@ impl<'a> Analyzer<'a> {
                 self.within_function = None;
             }
             ast::StmtKind::Struct(struct_decl) => {
+                // Validate the struct declaration and add it to the namespace
                 for member in struct_decl.members.iter_mut() {
                     self.analyze_type(&mut member.1)?;
                 }
@@ -229,6 +249,22 @@ impl<'a> Analyzer<'a> {
                 }
 
                 if let Some(var_type) = &var_stmt.typ {
+                    if self
+                        .namespace
+                        .get(self.file.lexeme(&var_stmt.ident.span))
+                        .is_some()
+                    {
+                        return Err(var_stmt.ident.error_at("redefinition of variable"));
+                    } else if self
+                        .imports
+                        .get(self.file.lexeme(&var_stmt.ident.span))
+                        .is_some()
+                    {
+                        return Err(var_stmt
+                            .ident
+                            .error_at("cannot define variable with same name as imported module"));
+                    }
+
                     self.namespace.insert(
                         self.file.lexeme(&var_stmt.ident.span).to_string(),
                         var_type.clone(),
@@ -440,38 +476,166 @@ impl<'a> Analyzer<'a> {
                 }
             }
             ast::ExprKind::Binary(binary_expr) => {
-                self.analyze_expr(&mut binary_expr.left)?;
-                self.analyze_expr(&mut binary_expr.right)?;
+                if let token::TokenKind::Dot = &binary_expr.op.kind {
+                    if let ast::ExprKind::Var(left_var_expr) = &binary_expr.left.kind {
+                        dbg!(&self.imports.keys());
 
-                if let Some(left_expr_type) = &binary_expr.left.typ {
-                    if let Some(right_expr_type) = &binary_expr.right.typ {
-                        if !self.type_eq(right_expr_type, left_expr_type) {
+                        if self
+                            .imports
+                            .get(self.file.lexeme(&left_var_expr.ident.span))
+                            .is_some()
+                        {
+                            // Left of '.' is a module type ident
+                            if let ast::ExprKind::Var(right_var_expr) = &binary_expr.right.kind {
+                                expr.typ = Some(
+                                    match self.namespace.get(&format!(
+                                        "{}.{}",
+                                        self.file.lexeme(&left_var_expr.ident.span),
+                                        self.file.lexeme(&right_var_expr.ident.span)
+                                    )) {
+                                        Some(typ) => typ.clone(),
+                                        None => {
+                                            return Err(Error {
+                                                message: format!(
+                                                    "module: '{}' doesnot export member: '{}'",
+                                                    self.file.lexeme(&left_var_expr.ident.span),
+                                                    self.file.lexeme(&right_var_expr.ident.span)
+                                                ),
+                                                span: binary_expr.right.span.clone(),
+                                            });
+                                        }
+                                    },
+                                );
+
+                                return Ok(());
+                            } else {
+                                return Err(Error {
+                                    message:
+                                        "operator '.' can only have an identifier on it's right"
+                                            .to_string(),
+                                    span: binary_expr.right.span.clone(),
+                                });
+                            }
+                        } else {
+                            self.analyze_expr(&mut binary_expr.left)?;
+                        }
+                    }
+
+                    if let ast::ExprKind::Var(var_expr) = &binary_expr.right.kind {
+                        let member_name = self.file.lexeme(&var_expr.ident.span);
+                        if let Some(target_type) = &binary_expr.left.typ {
+                            if let ast::TypeKind::Struct(struct_type) = &target_type.kind {
+                                let found_member = struct_type
+                                    .members
+                                    .iter()
+                                    .find(|(type_member_name, _)| type_member_name == member_name);
+
+                                if let Some(found_member) = found_member {
+                                    expr.typ = Some(found_member.1.clone());
+                                } else {
+                                    return Err(Error {
+                                        message: format!(
+                                            "field '{}' does not exist on struct type: '{}'",
+                                            member_name, struct_type.name
+                                        ),
+                                        span: binary_expr.left.span.clone(),
+                                    });
+                                }
+                            } else {
+                                return Err(Error {
+                                    message:
+                                        "operator '.' must have struct type expression on left"
+                                            .to_string(),
+                                    span: binary_expr.left.span.clone(),
+                                });
+                            }
+                        } else {
                             return Err(Error {
+                                message: "operator '.' cannot have void expression on left"
+                                    .to_string(),
+                                span: binary_expr.left.span.clone(),
+                            });
+                        }
+                    } else {
+                        return Err(Error {
+                            message: "operator '.' can only have an identifier on it's right"
+                                .to_string(),
+                            span: binary_expr.right.span.clone(),
+                        });
+                    }
+                } else {
+                    self.analyze_expr(&mut binary_expr.left)?;
+                    self.analyze_expr(&mut binary_expr.right)?;
+
+                    if let Some(left_expr_type) = &binary_expr.left.typ {
+                        if let Some(right_expr_type) = &binary_expr.right.typ {
+                            if !self.type_eq(right_expr_type, left_expr_type) {
+                                return Err(Error {
                                 message: "binary expressions must have the same type expression on both sides".into(),
                                 span: expr.span.clone(),
                             });
-                        }
+                            }
 
-                        if let ast::TypeKind::Prim(prim_type) = &left_expr_type.kind {
-                            if prim_type.is_numeric() {
-                                expr.typ = Some(left_expr_type.clone());
-                                return Ok(());
+                            if let ast::TypeKind::Prim(prim_type) = &left_expr_type.kind {
+                                match &binary_expr.op.kind {
+                                    token::TokenKind::Equal => {
+                                        if !binary_expr.left.kind.is_lvalue() {
+                                            return Err(Error {
+                                                message: "left of assignment can only be variable or get expression".into(),
+                                                span: binary_expr.left.span.clone(),
+                                            });
+                                        }
+                                        expr.typ = Some(left_expr_type.clone());
+                                    }
+
+                                    token::TokenKind::Plus
+                                    | token::TokenKind::Minus
+                                    | token::TokenKind::Star
+                                    | token::TokenKind::Slash
+                                    | token::TokenKind::Percent => {
+                                        if !prim_type.is_numeric() {
+                                            return Err(Error {
+                                            message:
+                                                "binary expressions are only valid on primitive numeric operands"
+                                                    .into(),
+                                            span: expr.span.clone(),
+                                        });
+                                        }
+
+                                        expr.typ = Some(left_expr_type.clone());
+                                    }
+                                    token::TokenKind::Lesser
+                                    | token::TokenKind::Greater
+                                    | token::TokenKind::LesserEqual
+                                    | token::TokenKind::GreaterEqual
+                                    | token::TokenKind::EqualEqual
+                                    | token::TokenKind::BangEqual => {
+                                        expr.typ = Some(ast::Type {
+                                            span: 0..0,
+                                            kind: ast::TypeKind::Prim(ast::PrimType::Bool),
+                                        });
+                                    }
+                                    token::TokenKind::AndAnd | token::TokenKind::OrOr => {
+                                        if !matches!(prim_type, ast::PrimType::Bool) {
+                                            return Err(Error {
+                                            message:
+                                                "operator `&&` & `||` can only be used with boolean operands"
+                                                    .into(),
+                                            span: expr.span.clone(),
+                                        });
+                                        }
+                                    }
+                                    _ => unreachable!(),
+                                }
                             }
                         }
-
+                    } else {
                         return Err(Error {
-                            message:
-                                "binary expressions can only be done on primitive numeric types"
-                                    .into(),
+                            message: "cannot use void expression in a binary expression".into(),
                             span: expr.span.clone(),
                         });
                     }
                 }
-
-                return Err(Error {
-                    message: "cannot use void expression in a binary expression".into(),
-                    span: expr.span.clone(),
-                });
             }
             ast::ExprKind::Var(var_expr) => {
                 let var_name = self.file.lexeme(&var_expr.ident.span);
@@ -628,6 +792,7 @@ impl<'a> Analyzer<'a> {
             }
             ast::ExprKind::StructLit(struct_lit) => {
                 self.analyze_type(&mut struct_lit.typ)?;
+                // TODO: Make sure initializers are correct type
                 expr.typ = Some(struct_lit.typ.clone());
             }
             ast::ExprKind::SliceLit(slice_lit) => {
@@ -716,6 +881,126 @@ impl<'a> Analyzer<'a> {
     }
 
     fn analyze(&mut self) -> Result<(), Error> {
+        // Validate that there is only one import of a file
+        for import in self.file.imports() {
+            if let ast::StmtKind::Import(import_decl) = &import.kind {
+                let import_name = if let Some(alias) = &import_decl.alias {
+                    self.file.lexeme(&alias.span)
+                } else {
+                    let import_path = Path::new(self.file.lexeme(
+                        &((import_decl.path.span.start + 1)..(import_decl.path.span.end - 1)),
+                    ));
+                    import_path.file_stem().unwrap().to_str().unwrap()
+                };
+
+                if self.imports.get(import_name).is_some() {
+                    return Err(Error {
+                        span: import.pointer.clone(),
+                        message: "re-importing previously imported module".into(),
+                    });
+                }
+
+                let import_path = {
+                    let mut dir_path = self.file.path.clone();
+                    dir_path.pop();
+                    dir_path.push(
+                        &self.file.lexeme(&import_decl.path.span)
+                            [1..self.file.lexeme(&import_decl.path.span).len() - 1],
+                    );
+                    dir_path
+                };
+
+                let mut imported_file = match ast::File::new(import_path) {
+                    Ok(file) => file,
+                    Err(io_error) => {
+                        return Err(Error {
+                            span: import_decl.path.span.clone(),
+                            message: format!(
+                                "could not read imported file. OS Error: {}",
+                                io_error.to_string()
+                            ),
+                        })
+                    }
+                };
+
+                let tokens = match lexer::lex(&imported_file.source) {
+                    Ok(tokens) => tokens,
+                    Err(err) => {
+                        return Err(Error {
+                            span: import.pointer.clone(),
+                            message: format!("lex error in imported module. {}", err.message),
+                        })
+                    }
+                };
+
+                imported_file.stmts = match parser::parse(&tokens) {
+                    Ok(stmts) => stmts,
+                    Err(err) => {
+                        return Err(Error {
+                            span: import.pointer.clone(),
+                            message: format!("parse error in imported module. {}", err.message),
+                        })
+                    }
+                };
+
+                analyze_mut(&mut imported_file)?;
+
+                for export in imported_file.exports() {
+                    match &export.kind {
+                        ast::StmtKind::Struct(struct_decl) => {
+                            let struct_name = format!(
+                                "{}.{}",
+                                import_name,
+                                imported_file.lexeme(&struct_decl.ident.span).to_string()
+                            );
+
+                            let struct_type = ast::StructType {
+                                name: struct_name.clone(),
+                                members: struct_decl
+                                    .members
+                                    .iter()
+                                    .map(|(ident, typ)| {
+                                        (self.file.lexeme(&ident.span).into(), typ.clone())
+                                    })
+                                    .collect(),
+                            };
+
+                            self.typespace
+                                .insert(struct_name, ast::TypeKind::Struct(struct_type));
+                        }
+                        ast::StmtKind::Fun(fun_decl) => {
+                            self.namespace.insert(
+                                format!(
+                                    "{}.{}",
+                                    import_name,
+                                    imported_file.lexeme(&fun_decl.ident.span)
+                                ),
+                                ast::Type {
+                                    span: 0..0,
+                                    kind: ast::FunType {
+                                        parameters: fun_decl
+                                            .parameters
+                                            .iter()
+                                            .map(|(_, typ)| typ.clone())
+                                            .collect(),
+                                        returns: fun_decl
+                                            .return_type
+                                            .as_ref()
+                                            .map(|return_type| Box::new(return_type.clone())),
+                                    }
+                                    .into(),
+                                },
+                            );
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+
+                self.imports.insert(import_name.to_string(), imported_file);
+                // TODO: Validate that there are no import cycles (e.g. a->b->a where `->` implying dependancy)
+            }
+        }
+
         let mut new_stmts = self.file.stmts.clone();
         for stmt in new_stmts.iter_mut() {
             self.analyze_stmt(stmt)?;
@@ -726,6 +1011,7 @@ impl<'a> Analyzer<'a> {
     }
 }
 
+#[allow(dead_code)]
 pub fn analyze(file: &ast::File) -> Result<ast::File, Error> {
     let mut new_file = file.clone();
     let mut analyzer = Analyzer::new(&mut new_file);

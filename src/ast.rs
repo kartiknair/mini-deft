@@ -101,6 +101,7 @@ pub struct Type {
 
 #[derive(Debug, Clone)]
 pub struct FunDecl {
+    pub exported: bool,
     pub external: bool,
     pub ident: token::Token,
     pub parameters: Vec<(token::Token, Type)>,
@@ -110,8 +111,15 @@ pub struct FunDecl {
 
 #[derive(Debug, Clone)]
 pub struct StructDecl {
+    pub exported: bool,
     pub ident: token::Token,
     pub members: Vec<(token::Token, Type)>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ImportDecl {
+    pub path: token::Token,
+    pub alias: Option<token::Token>,
 }
 
 #[derive(Debug, Clone)]
@@ -154,6 +162,7 @@ pub struct BlockStmt {
 pub enum StmtKind {
     Fun(FunDecl),
     Struct(StructDecl),
+    Import(ImportDecl),
 
     Var(VarStmt),
     If(IfStmt),
@@ -275,6 +284,44 @@ impl File {
             source,
             stmts: Vec::new(),
         })
+    }
+
+    pub fn exports(&self) -> Vec<&Stmt> {
+        self.stmts
+            .iter()
+            .filter(|stmt| match &stmt.kind {
+                StmtKind::Fun(fun_decl) => fun_decl.exported,
+                StmtKind::Struct(struct_decl) => struct_decl.exported,
+                _ => false,
+            })
+            .collect()
+    }
+
+    pub fn imports(&self) -> Vec<&Stmt> {
+        self.stmts
+            .iter()
+            .filter(|stmt| matches!(&stmt.kind, StmtKind::Import(_)))
+            .collect()
+    }
+
+    #[allow(dead_code)]
+    pub fn exports_mut(&mut self) -> Vec<&mut Stmt> {
+        self.stmts
+            .iter_mut()
+            .filter(|stmt| match &stmt.kind {
+                StmtKind::Fun(fun_decl) => fun_decl.exported,
+                StmtKind::Struct(struct_decl) => struct_decl.exported,
+                _ => false,
+            })
+            .collect()
+    }
+
+    #[allow(dead_code)]
+    pub fn imports_mut(&mut self) -> Vec<&mut Stmt> {
+        self.stmts
+            .iter_mut()
+            .filter(|stmt| matches!(&stmt.kind, StmtKind::Import(_)))
+            .collect()
     }
 
     pub fn lexeme(&self, span: &Span) -> &str {
