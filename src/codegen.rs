@@ -142,10 +142,11 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
         let func_decl = self.declare_fun(func);
 
         self.current_function = Some(func_decl);
-        let retblock = self.context.append_basic_block(func_decl, "retblock");
-        self.function_retblock = Some(retblock);
 
         if let Some(block) = &func.block {
+            let retblock = self.context.append_basic_block(func_decl, "retblock");
+            self.function_retblock = Some(retblock);
+
             let function_entry_block = self.context.append_basic_block(func_decl, "entry");
             self.builder.position_at_end(function_entry_block);
             if let Some(ret_type) = &func.return_type {
@@ -165,25 +166,25 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                 kind: ast::StmtKind::Block(block.clone()),
                 pointer: 0..0,
             });
+
+            self.builder.position_at_end(retblock);
+            if func.return_type.is_some() {
+                self.builder.build_return(Some(
+                    &self.builder.build_load(self.function_retval.unwrap(), ""),
+                ));
+            } else {
+                self.builder.build_return(None);
+            }
+
+            self.function_retblock
+                .unwrap()
+                .move_after(func_decl.get_last_basic_block().unwrap())
+                .unwrap();
+
+            self.current_function = None;
+            self.function_retblock = None;
+            self.function_retval = None;
         }
-
-        self.builder.position_at_end(retblock);
-        if func.return_type.is_some() {
-            self.builder.build_return(Some(
-                &self.builder.build_load(self.function_retval.unwrap(), ""),
-            ));
-        } else {
-            self.builder.build_return(None);
-        }
-
-        self.function_retblock
-            .unwrap()
-            .move_after(func_decl.get_last_basic_block().unwrap())
-            .unwrap();
-
-        self.current_function = None;
-        self.function_retblock = None;
-        self.function_retval = None;
 
         func_decl
     }

@@ -45,6 +45,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6245d59a3e82a7fc217c5828a6692dbc6dfb63a0c8c90495621f7b9d79704a0e"
 
 [[package]]
+name = "deft"
+version = "0.0.0"
+dependencies = [
+ "ariadne",
+ "derive_more",
+ "either",
+ "inkwell",
+ "seahorse",
+]
+
+[[package]]
 name = "derive_more"
 version = "0.99.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -135,16 +146,6 @@ name = "memchr"
 version = "2.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "308cc39be01b73d0d18f82a0e7b2a3df85245f84af96fdddc5d202d27e47b86a"
-
-[[package]]
-name = "myc-rewrite"
-version = "0.1.0"
-dependencies = [
- "ariadne",
- "derive_more",
- "either",
- "inkwell",
-]
 
 [[package]]
 name = "once_cell"
@@ -244,6 +245,12 @@ name = "scopeguard"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d29ab0c6d3fc0ee92fe66e2d99f700eab17a8d57d1c1d3b748380fb20baa78cd"
+
+[[package]]
+name = "seahorse"
+version = "1.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8bee1fe454786f1d236a07cb3d3adcbaca96e9ba42d23bc58de059937bb059bd"
 
 [[package]]
 name = "semver"

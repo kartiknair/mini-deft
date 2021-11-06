@@ -1,17 +1,6 @@
-fun is_42(n i32) bool {
-    if n == 42 {
-        return true
-    }
-
-    return false
-}
+extern fun print_i32(n i32)
 
 fun main() i32 {
-    var n1 = 42
-    var n2 = 36
-
-    var b1 = is_42(n1)
-    var b2 = is_42(n2)
-
+    print_i32(42)
     return 0
 }
