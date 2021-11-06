@@ -707,9 +707,9 @@ impl<'a> Parser<'a> {
                 };
                 let init = if self.peek()?.kind == TokenKind::Equal {
                     self.current += 1;
-                    Some(self.parse_expr()?)
+                    self.parse_expr()?
                 } else {
-                    None
+                    return Err(self.error_at_current("expect variable initializer"));
                 };
 
                 self.expect(

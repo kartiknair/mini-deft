@@ -156,6 +156,7 @@ impl<'a> Analyzer<'a> {
                     self.analyze_type(return_type)?;
                 }
 
+                let mut shadowed = HashMap::new();
                 for param in fun_decl.parameters.iter_mut() {
                     self.analyze_type(&mut param.1)?;
 
@@ -165,8 +166,12 @@ impl<'a> Analyzer<'a> {
                             .error_at("parameter name cannot be same as function name"));
                     }
 
-                    self.namespace
-                        .insert(self.file.lexeme(&param.0.span).into(), param.1.clone());
+                    if let Some(old_value) = self
+                        .namespace
+                        .insert(self.file.lexeme(&param.0.span).to_string(), param.1.clone())
+                    {
+                        shadowed.insert(self.file.lexeme(&param.0.span).to_string(), old_value);
+                    }
                 }
 
                 self.namespace.insert(
@@ -199,6 +204,13 @@ impl<'a> Analyzer<'a> {
                         .error_at("missing block in function declaration"));
                 }
 
+                for param in fun_decl.parameters.iter_mut() {
+                    self.namespace.remove(self.file.lexeme(&param.0.span));
+                }
+                for (name, typ) in shadowed {
+                    self.namespace.insert(name, typ);
+                }
+
                 self.within_function = None;
             }
             ast::StmtKind::Struct(struct_decl) => {
@@ -223,29 +235,29 @@ impl<'a> Analyzer<'a> {
 
             ast::StmtKind::Var(var_stmt) => {
                 if let Some(typ) = &mut var_stmt.typ {
-                    if let Some(init) = &mut var_stmt.init {
-                        // e.g. var x int = 32
-                        self.analyze_expr(init)?;
-                        if !self.is_assignable(init, typ, false)? {
-                            return Err(Error {
-                                message: "variable initializer is not assignable to provided type"
-                                    .into(),
-                                span: init.span.clone(),
-                            });
-                        }
-                    } else {
-                        // e.g. var x int
-                        self.analyze_type(typ)?;
+                    // e.g. var x int = 32
+                    self.analyze_expr(&mut var_stmt.init)?;
+                    self.analyze_type(typ)?;
+                    if !self.is_assignable(&var_stmt.init, typ, false)? {
+                        return Err(Error {
+                            message: "variable initializer is not assignable to provided type"
+                                .into(),
+                            span: var_stmt.init.span.clone(),
+                        });
                     }
-                } else if let Some(init) = &mut var_stmt.init {
-                    // e.g. var x = 34
-                    self.analyze_expr(init)?;
-                    var_stmt.typ = init.typ.clone();
                 } else {
-                    // e.g. var x
-                    return Err(var_stmt.ident.error_at(
-                        "variable declaration requires either a type or an initializer",
-                    ));
+                    // e.g. var x = 34
+                    self.analyze_expr(&mut var_stmt.init)?;
+                    if !var_stmt.init.typ.as_ref().unwrap().kind.is_copyable()
+                        && var_stmt.init.kind.is_lvalue()
+                    {
+                        return Err(Error {
+                            message: "variable initializer is not copyable. use an explicit copy operation"
+                                .into(),
+                            span: var_stmt.init.span.clone(),
+                        });
+                    }
+                    var_stmt.typ = var_stmt.init.typ.clone();
                 }
 
                 if let Some(var_type) = &var_stmt.typ {
@@ -660,7 +672,7 @@ impl<'a> Analyzer<'a> {
                         for (i, arg) in call_expr.args.iter().enumerate() {
                             if arg.typ.is_some() {
                                 let param_type = &fun_type.parameters[i];
-                                if !self.is_assignable(arg, &param_type, true)? {
+                                if !self.is_assignable(arg, param_type, true)? {
                                     return Err(Error {
                                         message: "invalid argument type".into(),
                                         span: arg.span.clone(),
@@ -832,7 +844,7 @@ impl<'a> Analyzer<'a> {
                             {
                                 sum_type.variants.push(cloned_expr_typ);
                             }
-                        } else if !self.type_eq(&slice_eltype, &expr_typ) {
+                        } else if !self.type_eq(slice_eltype, expr_typ) {
                             let sum_type = ast::Type {
                                 span: 0..0,
                                 kind: ast::TypeKind::Sum(ast::SumType {

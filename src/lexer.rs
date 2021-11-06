@@ -101,7 +101,7 @@ impl Lexer {
     }
 
     fn lex_ident(&mut self) -> Result<Token, Error> {
-        while !self.at_end() && self.peek()?.is_alphanumeric() {
+        while !self.at_end() && (self.peek()?.is_alphanumeric() || self.peek()? == '_') {
             self.advance();
         }
 

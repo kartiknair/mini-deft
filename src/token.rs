@@ -89,7 +89,7 @@ impl TokenKind {
     }
 
     pub fn is_binary_op(&self) -> bool {
-        *self > Self::Equal && *self < Self::OrOr
+        *self >= Self::Equal && *self < Self::OrOr
     }
 
     pub fn is_comparitive_op(&self) -> bool {

@@ -79,7 +79,7 @@ impl TypeKind {
         match self {
             Self::Prim(prim_type) => !matches!(prim_type, PrimType::Str),
             Self::Fun(_) => false,
-            Self::Struct(struct_type) => struct_type
+            Self::Struct(struct_type) => !struct_type
                 .members
                 .iter()
                 .any(|(_, member_type)| !member_type.kind.is_copyable()),
@@ -126,7 +126,7 @@ pub struct ImportDecl {
 pub struct VarStmt {
     pub ident: token::Token,
     pub typ: Option<Type>,
-    pub init: Option<Expr>,
+    pub init: Expr,
 }
 
 #[derive(Debug, Clone)]

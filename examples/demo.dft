@@ -8,6 +8,7 @@ fun fib(n i32) i32 {
     return fib(n-1) + fib(n-2)
 }
 
-fun main() {
+fun main() i32 {
     printi32(fib(20))
+    return 0
 }
