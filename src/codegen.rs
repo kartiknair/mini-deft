@@ -39,7 +39,7 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                 ast::PrimType::Float(bit_size) => match bit_size {
                     32 => self.context.f32_type().into(),
                     64 => self.context.f64_type().into(),
-                    _ => panic!("codegen has only been implemented for 32 and 64 bit float types"),
+                    _ => panic!("internal-error: codegen has only been implemented for 32 and 64 bit float types"),
                 },
                 ast::PrimType::Bool => self.context.bool_type().into(),
                 ast::PrimType::Str => self
@@ -74,7 +74,7 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                 .into(),
             ast::TypeKind::Slice(_) => todo!(),
             ast::TypeKind::Sum(_) => todo!(),
-            ast::TypeKind::Named(_) => panic!("named type should be resolved before generation"),
+            ast::TypeKind::Named(_) => panic!("internal-error: named type should be resolved before generation"),
         }
     }
 
@@ -191,7 +191,39 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
 
     fn gen_expr(&mut self, expr: &ast::Expr) -> BasicValueEnum<'ctx> {
         match &expr.kind {
-            ast::ExprKind::Unary(_) => todo!(),
+            ast::ExprKind::Unary(unary_expr) => {
+                let target_value = self.gen_expr(&*unary_expr.expr);
+
+                match &unary_expr.op.kind {
+                    token::TokenKind::Bang => self
+                        .builder
+                        .build_not(target_value.into_int_value(), "")
+                        .into(),
+                    token::TokenKind::Minus => match &unary_expr.expr.typ.as_ref().unwrap().kind {
+                        ast::TypeKind::Prim(prim_type) => match prim_type {
+                            ast::PrimType::Int(_) | ast::PrimType::UInt(_) => self
+                                .builder
+                                .build_int_sub(
+                                    target_value.get_type().const_zero().into_int_value(),
+                                    target_value.into_int_value(),
+                                    "",
+                                )
+                                .into(),
+                            ast::PrimType::Float(_) => self
+                                .builder
+                                .build_float_sub(
+                                    target_value.get_type().const_zero().into_float_value(),
+                                    target_value.into_float_value(),
+                                    "",
+                                )
+                                .into(),
+                            _ => unreachable!(),
+                        },
+                        _ => unreachable!(),
+                    },
+                    _ => unreachable!(),
+                }
+            }
             ast::ExprKind::Binary(binary_expr) => match &binary_expr.op.kind {
                 token::TokenKind::Equal => {
                     let target = &*binary_expr.left;
@@ -201,10 +233,72 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                             self.builder.build_store(ptr, self.gen_expr(&*binary_expr.right));
                             self.builder.build_load(ptr, "")
                         }
-                        ast::ExprKind::Binary(_get_expr) => {
-                            todo!()
+                        ast::ExprKind::Binary(get_expr) => {
+                            if get_expr.op.kind != token::TokenKind::Dot {
+                                panic!("internal-error: can only generate assignment to `.` get expressions")
+                            }
+
+                            let struct_value = self.gen_expr(&*get_expr.left);
+                            let new_member_value = self.gen_expr(&*binary_expr.right);
+
+                            if let ast::TypeKind::Struct(struct_type) = &get_expr.left.typ.as_ref().unwrap().kind {
+                                if let ast::ExprKind::Var(var_expr) = &get_expr.right.kind {
+                                    let member_name = self.file.lexeme(&var_expr.ident.span);
+                                    let member_idx = struct_type
+                                        .members
+                                        .iter()
+                                        .position(
+                                            |(nested_member_name, _)| nested_member_name == member_name
+                                        )
+                                        .unwrap();
+                                    let member_ptr = self.builder
+                                        .build_struct_gep(
+                                            struct_value.into_pointer_value(),
+                                            member_idx as u32,
+                                            "",
+                                        ).unwrap();
+                                    self.builder.build_store(member_ptr, new_member_value);
+                                    self.builder.build_load(member_ptr, "")
+                                } else {
+                                    unreachable!()
+                                }
+                            } else {
+                                unreachable!()
+                            }
                         },
-                        _ => panic!("codegen has only been implemented for assignment with variables or get expression on the left-hand")
+                        _ => panic!("internal-error: codegen has only been implemented for assignment with variables or get expression on the left-hand")
+                    }
+                }
+
+                token::TokenKind::Dot => {
+                    let struct_value = self.gen_expr(&*binary_expr.left);
+
+                    if let ast::TypeKind::Struct(struct_type) =
+                        &binary_expr.left.typ.as_ref().unwrap().kind
+                    {
+                        if let ast::ExprKind::Var(var_expr) = &binary_expr.right.kind {
+                            let member_name = self.file.lexeme(&var_expr.ident.span);
+                            let member_idx = struct_type
+                                .members
+                                .iter()
+                                .position(|(nested_member_name, _)| {
+                                    nested_member_name == member_name
+                                })
+                                .unwrap();
+                            let member_ptr = self
+                                .builder
+                                .build_struct_gep(
+                                    struct_value.into_pointer_value(),
+                                    member_idx as u32,
+                                    "",
+                                )
+                                .unwrap();
+                            self.builder.build_load(member_ptr, "")
+                        } else {
+                            unreachable!()
+                        }
+                    } else {
+                        unreachable!()
                     }
                 }
 
@@ -484,17 +578,23 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                 }
 
                 _ => panic!(
-                    "codegen has not been implemented for binary operator: {:?}",
+                    "internal-error: codegen has not been implemented for binary operator: {:?}",
                     binary_expr.op.kind
                 ),
             },
-            ast::ExprKind::Var(var_expr) => self.builder.build_load(
-                *self
+            ast::ExprKind::Var(var_expr) => {
+                let var_ptr = *self
                     .namespace
                     .get(self.file.lexeme(&var_expr.ident.span))
-                    .unwrap(),
-                "",
-            ),
+                    .unwrap();
+
+                if let ast::TypeKind::Struct(_) = &expr.typ.as_ref().unwrap().kind {
+                    // Structs are passed around directly by a pointer to them
+                    var_ptr.into()
+                } else {
+                    self.builder.build_load(var_ptr, "")
+                }
+            }
             ast::ExprKind::Call(call_expr) => {
                 if let ast::ExprKind::Var(var_expr) = &call_expr.callee.kind {
                     if let Some(func) = self
@@ -593,7 +693,7 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                 token::TokenKind::True => self.context.bool_type().const_int(1, false).into(),
                 token::TokenKind::False => self.context.bool_type().const_int(0, false).into(),
                 _ => panic!(
-                    "codegen has not been implemented for literal token type: {:?}",
+                    "internal-error: codegen has not been implemented for literal token type: {:?}",
                     lit
                 ),
             },
@@ -729,7 +829,7 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
 
                 self.builder.position_at_end(after_block);
             }
-            _ => panic!("non top-level declaration"),
+            _ => panic!("internal-error: cannot generate non top-level declaration"),
         }
     }
 }

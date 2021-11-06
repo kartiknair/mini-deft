@@ -490,8 +490,6 @@ impl<'a> Analyzer<'a> {
             ast::ExprKind::Binary(binary_expr) => {
                 if let token::TokenKind::Dot = &binary_expr.op.kind {
                     if let ast::ExprKind::Var(left_var_expr) = &binary_expr.left.kind {
-                        dbg!(&self.imports.keys());
-
                         if self
                             .imports
                             .get(self.file.lexeme(&left_var_expr.ident.span))

@@ -1,6 +1,15 @@
 extern fun print_i32(n i32)
 
+struct Point {
+    x i32
+    y i32
+}
+
 fun main() i32 {
-    print_i32(42)
+    var p1 = Point{x: 34, y: 56}
+    print_i32(p1.x)
+    p1.x = 56
+    print_i32(p1.x)
+
     return 0
 }
