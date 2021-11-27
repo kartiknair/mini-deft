@@ -24,6 +24,7 @@ pub enum TokenKind {
     Export,
     Extern,
     For,
+    Iface,
 
     // symbols
     LeftParen,
@@ -80,6 +81,7 @@ impl TokenKind {
             "export" => Some(TokenKind::Export),
             "extern" => Some(TokenKind::Extern),
             "for" => Some(TokenKind::For),
+            "iface" => Some(TokenKind::Iface),
             _ => None,
         }
     }

@@ -574,7 +574,7 @@ impl<'a> Parser<'a> {
                 self.expect(TokenKind::RightParen, "missing closing ')'")?;
 
                 let return_type = match self.peek()?.kind {
-                    TokenKind::LeftBrace | TokenKind::Semicolon => None,
+                    TokenKind::LeftBrace | TokenKind::Semicolon | TokenKind::For => None,
                     _ => Some(self.parse_type()?),
                 };
 
@@ -640,6 +640,76 @@ impl<'a> Parser<'a> {
                     pointer: token.span.clone(),
                 })
             }
+            TokenKind::Iface => {
+                self.current += 1;
+
+                let ident = self
+                    .expect(TokenKind::Ident, "expect interface name")?
+                    .clone();
+                self.expect(TokenKind::LeftBrace, "expect interface body")?;
+
+                if self.peek()?.kind == TokenKind::RightBrace {
+                    return Err(self.error_at_current("empty interface is illegal"));
+                }
+                let mut methods = Vec::new();
+                while self.peek()?.kind != TokenKind::RightBrace {
+                    let ident = self
+                        .expect(TokenKind::Ident, "expect interface method name")?
+                        .clone();
+                    let mut parameters = Vec::new();
+                    self.expect(
+                        TokenKind::LeftParen,
+                        "expect '(' after interface method name",
+                    )?;
+
+                    if self.peek()?.kind != TokenKind::RightParen {
+                        loop {
+                            parameters.push(self.parse_type()?);
+
+                            if self.peek()?.kind != TokenKind::Comma {
+                                break;
+                            } else {
+                                self.current += 1;
+                            }
+                        }
+                    }
+
+                    self.expect(TokenKind::RightParen, "missing closing ')'")?;
+
+                    let return_type = if self.peek()?.kind != TokenKind::Semicolon {
+                        Some(self.parse_type()?)
+                    } else {
+                        None
+                    };
+
+                    self.expect(
+                        TokenKind::Semicolon,
+                        "expect ';' after interface method type",
+                    )?;
+
+                    methods.push(ast::IfaceFunDecl {
+                        ident,
+                        parameters,
+                        return_type,
+                    });
+                }
+
+                self.expect(TokenKind::RightBrace, "unclosed interface body")?;
+
+                if self.peek()?.kind == TokenKind::Semicolon {
+                    self.current += 1; // optional trailing ';'
+                }
+
+                Ok(ast::Stmt {
+                    kind: ast::StmtKind::Iface(ast::IfaceDecl {
+                        exported: false,
+                        ident,
+                        methods,
+                    }),
+                    pointer: token.span.clone(),
+                })
+            }
+
             TokenKind::Var => {
                 self.current += 1;
 

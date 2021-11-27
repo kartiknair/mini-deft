@@ -1,5 +1,15 @@
 extern fun print_i32(n i32)
 
+struct Line {
+    begin Point
+    end   Point
+}
+
+struct Point {
+    x f64
+    y f64
+}
+
 fun fib(n i32) i32 {
     if n < 2 {
         return 0

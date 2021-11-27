@@ -1,0 +1,19 @@
+extern fun print_i32(n i32)
+
+iface Printable {
+    print()
+}
+
+fun print(p Printable) {
+    p.print()
+}
+
+fun print() for i32 {
+    print_i32(self)
+}
+
+fun main() {
+    var n1 = 35
+    print(n1)
+    print(45)
+}

@@ -34,6 +34,12 @@ pub struct StructType {
 }
 
 #[derive(Debug, Clone)]
+pub struct IfaceType {
+    pub name: String,
+    pub methods: Vec<(String, FunType)>,
+}
+
+#[derive(Debug, Clone)]
 pub struct PtrType {
     pub eltype: Box<Type>,
 }
@@ -46,12 +52,6 @@ pub struct BoxType {
 #[derive(Debug, Clone)]
 pub struct SumType {
     pub variants: Vec<Type>,
-}
-
-#[derive(Debug, Clone)]
-pub struct IfaceType {
-    pub name: String,
-    pub methods: Vec<(String, FunType)>,
 }
 
 // arbitrary named type. can resolve to any kind of type (currently
@@ -134,6 +134,21 @@ pub struct StructDecl {
     pub members: Vec<(token::Token, Type)>,
 }
 
+// Different from normal `FunDecl` since parameter names & body are not required and it cannot be external or exported.
+#[derive(Debug, Clone)]
+pub struct IfaceFunDecl {
+    pub ident: token::Token,
+    pub parameters: Vec<Type>,
+    pub return_type: Option<Type>,
+}
+
+#[derive(Debug, Clone)]
+pub struct IfaceDecl {
+    pub exported: bool,
+    pub ident: token::Token,
+    pub methods: Vec<IfaceFunDecl>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ImportDecl {
     pub path: token::Token,
@@ -180,6 +195,7 @@ pub struct BlockStmt {
 pub enum StmtKind {
     Fun(FunDecl),
     Struct(StructDecl),
+    Iface(IfaceDecl),
     Import(ImportDecl),
 
     Var(VarStmt),
