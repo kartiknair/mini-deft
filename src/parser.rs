@@ -340,12 +340,10 @@ impl<'a> Parser<'a> {
 
                     let mut args = Vec::new();
                     if self.peek()?.kind != TokenKind::RightParen {
-                        loop {
+                        while self.peek()?.kind != TokenKind::RightParen {
                             args.push(self.parse_expr()?);
 
-                            if self.peek()?.kind != TokenKind::Comma {
-                                break;
-                            } else {
+                            if self.peek()?.kind == TokenKind::Comma {
                                 self.current += 1;
                             }
                         }
