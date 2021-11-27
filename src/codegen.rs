@@ -251,7 +251,11 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                         ast::ExprKind::Var(var_expr) => {
                             let ptr = *self.namespace.get(self.file.lexeme(&var_expr.ident.span)).unwrap();
                             self.builder.build_store(ptr, self.gen_expr(&*binary_expr.right));
-                            self.builder.build_load(ptr, "")
+                            if let ast::TypeKind::Struct(_) = &binary_expr.right.typ.as_ref().unwrap().kind {
+                                ptr.into()
+                            } else {
+                                self.builder.build_load(ptr, "")
+                            }
                         }
                         ast::ExprKind::Binary(get_expr) => {
                             if get_expr.op.kind != token::TokenKind::Dot {
@@ -278,7 +282,12 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                                             "",
                                         ).unwrap();
                                     self.builder.build_store(member_ptr, new_member_value);
-                                    self.builder.build_load(member_ptr, "")
+
+                                    if let ast::TypeKind::Struct(_) = &expr.typ.as_ref().unwrap().kind {
+                                        member_ptr.into()
+                                    } else {
+                                        self.builder.build_load(member_ptr, "")
+                                    }
                                 } else {
                                     unreachable!()
                                 }
@@ -313,7 +322,11 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                                     "",
                                 )
                                 .unwrap();
-                            self.builder.build_load(member_ptr, "")
+                            if let ast::TypeKind::Struct(_) = &expr.typ.as_ref().unwrap().kind {
+                                member_ptr.into()
+                            } else {
+                                self.builder.build_load(member_ptr, "")
+                            }
                         } else {
                             unreachable!()
                         }
