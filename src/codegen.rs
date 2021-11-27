@@ -42,25 +42,6 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                     _ => panic!("internal-error: codegen has only been implemented for 32 and 64 bit float types"),
                 },
                 ast::PrimType::Bool => self.context.bool_type().into(),
-                ast::PrimType::Str => self
-                    .module
-                    .get_struct_type("str")
-                    .unwrap_or_else(|| {
-                        self.context.opaque_struct_type("str");
-                        self.module.get_struct_type("str").unwrap().set_body(
-                            &[
-                                self.context
-                                    .i8_type()
-                                    .ptr_type(AddressSpace::Generic)
-                                    .into(), // buffer
-                                self.context.i64_type().into(), // length
-                                self.context.bool_type().into(), // is_heap
-                            ],
-                            false,
-                        );
-                        self.module.get_struct_type("str").unwrap()
-                    })
-                    .into(),
             },
             ast::TypeKind::Box(box_type) => self
                 .gen_type(&*box_type.eltype)
@@ -72,7 +53,7 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                 .get_struct_type(&struct_type.name)
                 .unwrap()
                 .into(),
-            ast::TypeKind::Slice(_) => todo!(),
+            ast::TypeKind::Iface(_) => todo!(),
             ast::TypeKind::Sum(_) => todo!(),
             ast::TypeKind::Named(_) => panic!("internal-error: named type should be resolved before generation"),
         }
@@ -88,37 +69,58 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
     }
 
     fn declare_fun(&mut self, func: &ast::FunDecl) -> FunctionValue<'ctx> {
-        self.module
-            .get_function(self.file.lexeme(&func.ident.span))
-            .unwrap_or_else(|| {
-                if let Some(return_type) = &func.return_type {
-                    self.module.add_function(
-                        self.file.lexeme(&func.ident.span),
-                        self.gen_type(return_type).fn_type(
-                            &func
-                                .parameters
-                                .iter()
-                                .map(|(_, typ)| self.gen_type(typ).into())
-                                .collect::<Vec<BasicMetadataTypeEnum>>(),
-                            false,
-                        ),
-                        None,
-                    )
-                } else {
-                    self.module.add_function(
-                        self.file.lexeme(&func.ident.span),
-                        self.context.void_type().fn_type(
-                            &func
-                                .parameters
-                                .iter()
-                                .map(|(_, typ)| self.gen_type(typ).into())
-                                .collect::<Vec<BasicMetadataTypeEnum>>(),
-                            false,
-                        ),
-                        None,
-                    )
-                }
-            })
+        let fun_name = if let Some(target_type) = &func.target_type {
+            format!(
+                "{}__{}",
+                target_type.kind.type_name(),
+                self.file.lexeme(&func.ident.span)
+            )
+        } else {
+            self.file.lexeme(&func.ident.span).to_string()
+        };
+
+        self.module.get_function(&fun_name).unwrap_or_else(|| {
+            let mut tmp_params = func
+                .parameters
+                .iter()
+                .map(|(_, typ)| {
+                    if let ast::TypeKind::Struct(_) = &typ.kind {
+                        self.gen_type(typ).ptr_type(AddressSpace::Generic).into()
+                    } else {
+                        self.gen_type(typ).into()
+                    }
+                })
+                .collect::<Vec<BasicMetadataTypeEnum>>();
+            let parameters = if let Some(target_type) = &func.target_type {
+                tmp_params.insert(
+                    0,
+                    if let ast::TypeKind::Struct(_) = &target_type.kind {
+                        self.gen_type(target_type)
+                            .ptr_type(AddressSpace::Generic)
+                            .into()
+                    } else {
+                        self.gen_type(target_type).into()
+                    },
+                );
+                tmp_params
+            } else {
+                tmp_params
+            };
+
+            if let Some(return_type) = &func.return_type {
+                self.module.add_function(
+                    &fun_name,
+                    self.gen_type(return_type).fn_type(&parameters, false),
+                    None,
+                )
+            } else {
+                self.module.add_function(
+                    &fun_name,
+                    self.context.void_type().fn_type(&parameters, false),
+                    None,
+                )
+            }
+        })
     }
 
     fn gen_struct(&mut self, struct_decl: &ast::StructDecl) {
@@ -154,11 +156,23 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
             }
 
             for (i, param) in func_decl.get_param_iter().enumerate() {
-                let param_alloca = self.builder.build_alloca(param.get_type(), "");
-                self.builder.build_store(param_alloca, param);
                 self.namespace.insert(
-                    self.file.lexeme(&func.parameters[i].0.span).to_string(),
-                    param_alloca,
+                    if func.target_type.is_some() && i == 0 {
+                        "self".to_string()
+                    } else {
+                        self.file.lexeme(&func.parameters[i].0.span).to_string()
+                    },
+                    if let ast::TypeKind::Struct(_) = if func.target_type.is_some() && i == 0 {
+                        &func.target_type.as_ref().unwrap().kind
+                    } else {
+                        &func.parameters[i].1.kind
+                    } {
+                        param.into_pointer_value()
+                    } else {
+                        let param_alloca = self.builder.build_alloca(param.get_type(), "");
+                        self.builder.build_store(param_alloca, param);
+                        param_alloca
+                    },
                 );
             }
 
@@ -174,6 +188,12 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                 ));
             } else {
                 self.builder.build_return(None);
+            }
+
+            let last_block = func_decl.get_last_basic_block().unwrap();
+            if last_block.get_terminator().is_none() {
+                self.builder.position_at_end(last_block);
+                self.builder.build_unconditional_branch(retblock);
             }
 
             self.function_retblock
@@ -422,7 +442,6 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                                     .into(),
                                 _ => unreachable!(),
                             },
-                            ast::PrimType::Str => todo!(),
                             ast::PrimType::Bool => unreachable!(),
                         },
                         _ => unreachable!(),
@@ -501,7 +520,6 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                                     "",
                                 )
                                 .into(),
-                            ast::PrimType::Str => todo!(),
                         },
                         _ => todo!(),
                     }
@@ -620,7 +638,34 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                     }
                 } else if let ast::ExprKind::Binary(binary_expr) = &call_expr.callee.kind {
                     if binary_expr.op.kind == token::TokenKind::Dot {
-                        todo!()
+                        if let ast::ExprKind::Var(var_expr) = &binary_expr.right.kind {
+                            // Transform `target.method(42)` to `target__method(target, 42)`
+                            let target = self.gen_expr(&*binary_expr.left).into();
+                            if let Some(func) = self.module.get_function(&format!(
+                                "{}__{}",
+                                binary_expr.left.typ.as_ref().unwrap().kind.type_name(),
+                                self.file.lexeme(&var_expr.ident.span)
+                            )) {
+                                let mut genned_args = vec![target];
+                                for arg in &call_expr.args {
+                                    genned_args.push(self.gen_expr(arg).into());
+                                }
+
+                                if let Either::Left(value) = self
+                                    .builder
+                                    .build_call(func, &genned_args, "")
+                                    .try_as_basic_value()
+                                {
+                                    value
+                                } else {
+                                    self.context.i32_type().get_undef().into()
+                                }
+                            } else {
+                                panic!("internal-error: uncaught undefined method")
+                            }
+                        } else {
+                            panic!("internal-error: method name must be a var expr")
+                        }
                     } else {
                         panic!("internal-error: calling non-getexpr binary expr has not been implemented yet")
                     }
@@ -628,7 +673,6 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                     panic!("internal-error: can only call variable & get expressions")
                 }
             }
-            ast::ExprKind::Idx(_) => todo!(),
             ast::ExprKind::As(_) => todo!(),
             ast::ExprKind::Is(_) => todo!(),
             ast::ExprKind::StructLit(struct_lit) => {
@@ -646,7 +690,6 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                     panic!("internal-error: generated struct type is not a struct type")
                 }
             }
-            ast::ExprKind::SliceLit(_) => todo!(),
             ast::ExprKind::Lit(lit) => match &lit.token.kind {
                 token::TokenKind::Int => self
                     .context

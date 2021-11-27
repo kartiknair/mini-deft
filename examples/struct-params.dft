@@ -1,0 +1,15 @@
+extern fun print_f64(n f64)
+
+struct Point {
+    x f64
+    y f64
+}
+
+fun print_x(p Point) {
+    print_f64(p.x)
+}
+
+fun main() {
+    var p1 = Point{x: 45.67, y: 32.98}
+    print_x(p1)
+}

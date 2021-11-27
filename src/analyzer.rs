@@ -3,10 +3,25 @@ use std::{borrow::Borrow, collections::HashMap, convert::TryInto, mem::discrimin
 use crate::{ast, common::Error, lexer, parser, token};
 
 #[derive(Debug)]
+struct TypeInfo {
+    kind: ast::TypeKind,
+    methods: HashMap<String, ast::FunType>,
+}
+
+impl From<ast::TypeKind> for TypeInfo {
+    fn from(type_kind: ast::TypeKind) -> TypeInfo {
+        TypeInfo {
+            kind: type_kind,
+            methods: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Debug)]
 struct Analyzer<'a> {
     file: &'a mut ast::File,
     namespace: HashMap<String, ast::Type>,
-    typespace: HashMap<String, ast::TypeKind>,
+    typespace: HashMap<String, TypeInfo>,
     imports: HashMap<String, ast::File>,
 
     within_function: Option<ast::FunDecl>,
@@ -16,21 +31,53 @@ impl<'a> Analyzer<'a> {
     fn new(file: &'a mut ast::File) -> Self {
         let mut typespace = HashMap::new();
 
-        typespace.insert("i8".into(), ast::PrimType::Int(8).into());
-        typespace.insert("i16".into(), ast::PrimType::Int(16).into());
-        typespace.insert("i32".into(), ast::PrimType::Int(32).into());
-        typespace.insert("i64".into(), ast::PrimType::Int(64).into());
+        typespace.insert(
+            "i8".into(),
+            ast::TypeKind::Prim(ast::PrimType::Int(8)).into(),
+        );
+        typespace.insert(
+            "i16".into(),
+            ast::TypeKind::Prim(ast::PrimType::Int(16)).into(),
+        );
+        typespace.insert(
+            "i32".into(),
+            ast::TypeKind::Prim(ast::PrimType::Int(32)).into(),
+        );
+        typespace.insert(
+            "i64".into(),
+            ast::TypeKind::Prim(ast::PrimType::Int(64)).into(),
+        );
 
-        typespace.insert("u8".into(), ast::PrimType::UInt(8).into());
-        typespace.insert("u16".into(), ast::PrimType::UInt(16).into());
-        typespace.insert("u32".into(), ast::PrimType::UInt(32).into());
-        typespace.insert("u64".into(), ast::PrimType::UInt(64).into());
+        typespace.insert(
+            "u8".into(),
+            ast::TypeKind::Prim(ast::PrimType::UInt(8)).into(),
+        );
+        typespace.insert(
+            "u16".into(),
+            ast::TypeKind::Prim(ast::PrimType::UInt(16)).into(),
+        );
+        typespace.insert(
+            "u32".into(),
+            ast::TypeKind::Prim(ast::PrimType::UInt(32)).into(),
+        );
+        typespace.insert(
+            "u64".into(),
+            ast::TypeKind::Prim(ast::PrimType::UInt(64)).into(),
+        );
 
-        typespace.insert("f32".into(), ast::PrimType::Float(32).into());
-        typespace.insert("f64".into(), ast::PrimType::Float(64).into());
+        typespace.insert(
+            "f32".into(),
+            ast::TypeKind::Prim(ast::PrimType::Float(32)).into(),
+        );
+        typespace.insert(
+            "f64".into(),
+            ast::TypeKind::Prim(ast::PrimType::Float(64)).into(),
+        );
 
-        typespace.insert("str".into(), ast::PrimType::Str.into());
-        typespace.insert("bool".into(), ast::PrimType::Bool.into());
+        typespace.insert(
+            "bool".into(),
+            ast::TypeKind::Prim(ast::PrimType::Bool).into(),
+        );
 
         Self {
             file,
@@ -59,10 +106,6 @@ impl<'a> Analyzer<'a> {
             ast::TypeKind::Box(left_box_type) => {
                 let right_box_type: &ast::BoxType = right.kind.borrow().try_into().unwrap();
                 self.type_eq(&left_box_type.eltype, &right_box_type.eltype)
-            }
-            ast::TypeKind::Slice(left_slice_type) => {
-                let right_slice_type: &ast::SliceType = right.kind.borrow().try_into().unwrap();
-                self.type_eq(&left_slice_type.eltype, &right_slice_type.eltype)
             }
             ast::TypeKind::Sum(left_sum_type) => {
                 let right_sum_type: &ast::SumType = right.kind.borrow().try_into().unwrap();
@@ -103,27 +146,24 @@ impl<'a> Analyzer<'a> {
             ast::TypeKind::Box(box_type) => {
                 self.analyze_type(&mut box_type.eltype)?;
             }
-            ast::TypeKind::Slice(slice_type) => {
-                self.analyze_type(&mut slice_type.eltype)?;
-            }
             ast::TypeKind::Named(named_type) => {
                 let lexeme = self.file.lexeme(&named_type.name.span);
 
                 if let Some(module_ident) = &named_type.source {
-                    if let Some(resolved_type) = self.typespace.get(&format!(
+                    if let Some(resolved_type_info) = self.typespace.get(&format!(
                         "{}.{}",
                         self.file.lexeme(&module_ident.span),
                         lexeme,
                     )) {
-                        typ.kind = resolved_type.clone();
+                        typ.kind = resolved_type_info.kind.clone();
                     } else {
                         return Err(Error {
                             message: "unknown imported type".into(),
                             span: named_type.name.span.clone(),
                         });
                     }
-                } else if let Some(resolved_type) = self.typespace.get(lexeme) {
-                    typ.kind = resolved_type.clone();
+                } else if let Some(resolved_type_info) = self.typespace.get(lexeme) {
+                    typ.kind = resolved_type_info.kind.clone();
                 } else {
                     return Err(Error {
                         message: "unknown named type".into(),
@@ -164,6 +204,8 @@ impl<'a> Analyzer<'a> {
                         return Err(param
                             .0
                             .error_at("parameter name cannot be same as function name"));
+                    } else if self.file.lexeme(&param.0.span) == "self" {
+                        return Err(param.0.error_at("parameter name cannot be `self`"));
                     }
 
                     if let Some(old_value) = self
@@ -174,23 +216,62 @@ impl<'a> Analyzer<'a> {
                     }
                 }
 
-                self.namespace.insert(
-                    function_name.into(),
-                    ast::Type {
-                        span: 0..0,
-                        kind: ast::TypeKind::Fun(ast::FunType {
-                            parameters: fun_decl
-                                .parameters
-                                .iter()
-                                .map(|(_, typ)| typ.clone())
-                                .collect(),
-                            returns: fun_decl
-                                .return_type
-                                .as_ref()
-                                .map(|return_type| Box::new(return_type.clone())),
-                        }),
-                    },
-                );
+                if let Some(target_type) = &mut fun_decl.target_type {
+                    if let ast::TypeKind::Named(named_type) = &target_type.kind {
+                        let type_name = self.file.lexeme(&named_type.name.span);
+                        let resolved_type_info = match self.typespace.get_mut(type_name) {
+                            Some(typ_info) => typ_info,
+                            None => {
+                                return Err(Error {
+                                    span: target_type.span.clone(),
+                                    message: format!("undefined type: '{}'", type_name),
+                                });
+                            }
+                        };
+
+                        resolved_type_info.methods.insert(
+                            function_name.to_string(),
+                            ast::FunType {
+                                parameters: fun_decl
+                                    .parameters
+                                    .iter()
+                                    .map(|(_, typ)| typ.clone())
+                                    .collect(),
+                                returns: fun_decl
+                                    .return_type
+                                    .as_ref()
+                                    .map(|return_type| Box::new(return_type.clone())),
+                            },
+                        );
+                    } else {
+                        return Err(Error{
+                            span: target_type.span.clone(),
+                            message: "methods can only be defined on named types. consider introducing a new type".to_string(),
+                        });
+                    }
+
+                    self.analyze_type(target_type)?;
+                    self.namespace
+                        .insert("self".to_string(), target_type.clone());
+                } else {
+                    self.namespace.insert(
+                        function_name.to_string(),
+                        ast::Type {
+                            span: 0..0,
+                            kind: ast::TypeKind::Fun(ast::FunType {
+                                parameters: fun_decl
+                                    .parameters
+                                    .iter()
+                                    .map(|(_, typ)| typ.clone())
+                                    .collect(),
+                                returns: fun_decl
+                                    .return_type
+                                    .as_ref()
+                                    .map(|return_type| Box::new(return_type.clone())),
+                            }),
+                        },
+                    );
+                }
 
                 self.within_function = Some(fun_decl.clone());
 
@@ -229,8 +310,13 @@ impl<'a> Analyzer<'a> {
                         .collect(),
                 };
 
-                self.typespace
-                    .insert(struct_name, ast::TypeKind::Struct(struct_type));
+                self.typespace.insert(
+                    struct_name,
+                    TypeInfo {
+                        kind: ast::TypeKind::Struct(struct_type),
+                        methods: HashMap::new(),
+                    },
+                );
             }
 
             ast::StmtKind::Var(var_stmt) => {
@@ -408,6 +494,12 @@ impl<'a> Analyzer<'a> {
             if !self.type_eq(expr_type, target_type) {
                 if let ast::TypeKind::Box(box_type) = &target_type.kind {
                     Ok(self.type_eq(expr_type, &*box_type.eltype))
+                } else if let ast::TypeKind::Iface(_target_iface_type) = &target_type.kind {
+                    if let ast::TypeKind::Iface(_) = &expr_type.kind {
+                        return Ok(false);
+                    }
+
+                    todo!()
                 } else if let ast::TypeKind::Sum(target_sum_type) = &target_type.kind {
                     if let ast::TypeKind::Sum(_) = &expr_type.kind {
                         return Ok(false);
@@ -533,6 +625,18 @@ impl<'a> Analyzer<'a> {
 
                     if let ast::ExprKind::Var(var_expr) = &binary_expr.right.kind {
                         let member_name = self.file.lexeme(&var_expr.ident.span);
+
+                        let type_name = binary_expr.left.typ.as_ref().unwrap().kind.type_name();
+                        if let Some(type_info) = self.typespace.get(&type_name) {
+                            if let Some(method_type) = type_info.methods.get(member_name) {
+                                expr.typ = Some(ast::Type {
+                                    kind: method_type.clone().into(),
+                                    span: 0..0,
+                                });
+                                return Ok(());
+                            }
+                        }
+
                         if let Some(target_type) = &binary_expr.left.typ {
                             if let ast::TypeKind::Struct(struct_type) = &target_type.kind {
                                 let found_member = struct_type
@@ -702,26 +806,6 @@ impl<'a> Analyzer<'a> {
                     });
                 }
             }
-            ast::ExprKind::Idx(idx_expr) => {
-                self.analyze_expr(&mut idx_expr.target)?;
-                self.analyze_expr(&mut idx_expr.idx)?;
-
-                if let Some(target_type) = &idx_expr.target.typ {
-                    if let ast::TypeKind::Slice(slice_type) = &target_type.kind {
-                        expr.typ = Some((*slice_type.eltype).clone())
-                    } else {
-                        return Err(Error {
-                            message: "index target has non-slice type".into(),
-                            span: idx_expr.target.span.clone(),
-                        });
-                    }
-                } else {
-                    return Err(Error {
-                        message: "cannot index void expression".into(),
-                        span: idx_expr.target.span.clone(),
-                    });
-                }
-            }
             ast::ExprKind::As(as_expr) => {
                 self.analyze_expr(&mut as_expr.expr)?;
                 self.analyze_type(&mut as_expr.typ)?;
@@ -805,57 +889,6 @@ impl<'a> Analyzer<'a> {
                 // TODO: Make sure initializers are correct type
                 expr.typ = Some(struct_lit.typ.clone());
             }
-            ast::ExprKind::SliceLit(slice_lit) => {
-                let mut eltype = None;
-
-                if slice_lit.exprs.is_empty() {
-                    return Err(Error {
-                        message: "cannot infer type of empty slice literal".into(),
-                        span: expr.span.clone(),
-                    });
-                }
-
-                for expr in slice_lit.exprs.iter_mut() {
-                    self.analyze_expr(expr)?;
-                    if expr.typ.is_none() {
-                        return Err(Error {
-                            message: "cannot use void expression as slice literal element".into(),
-                            span: expr.span.clone(),
-                        });
-                    }
-                }
-
-                for expr in slice_lit.exprs.iter_mut() {
-                    let expr_typ = if let Some(typ) = &mut expr.typ {
-                        typ
-                    } else {
-                        panic!("")
-                    };
-                    let cloned_expr_typ = expr_typ.clone();
-
-                    if let Some(slice_eltype) = &eltype {
-                        if let ast::TypeKind::Sum(sum_type) = &mut expr_typ.kind {
-                            if !sum_type
-                                .variants
-                                .iter()
-                                .any(|variant| self.type_eq(variant, &cloned_expr_typ))
-                            {
-                                sum_type.variants.push(cloned_expr_typ);
-                            }
-                        } else if !self.type_eq(slice_eltype, expr_typ) {
-                            let sum_type = ast::Type {
-                                span: 0..0,
-                                kind: ast::TypeKind::Sum(ast::SumType {
-                                    variants: vec![slice_eltype.clone(), cloned_expr_typ],
-                                }),
-                            };
-                            eltype = Some(sum_type);
-                        }
-                    } else {
-                        eltype = Some(expr_typ.clone());
-                    }
-                }
-            }
             ast::ExprKind::Lit(lit) => {
                 expr.typ = Some(match &lit.token.kind {
                     token::TokenKind::Int => ast::Type {
@@ -865,10 +898,6 @@ impl<'a> Analyzer<'a> {
                     token::TokenKind::Float => ast::Type {
                         span: 0..0,
                         kind: ast::TypeKind::Prim(ast::PrimType::Float(64)),
-                    },
-                    token::TokenKind::String => ast::Type {
-                        span: 0..0,
-                        kind: ast::TypeKind::Prim(ast::PrimType::Str),
                     },
                     token::TokenKind::True => ast::Type {
                         span: 0..0,
@@ -975,8 +1004,13 @@ impl<'a> Analyzer<'a> {
                                     .collect(),
                             };
 
-                            self.typespace
-                                .insert(struct_name, ast::TypeKind::Struct(struct_type));
+                            self.typespace.insert(
+                                struct_name,
+                                TypeInfo {
+                                    kind: ast::TypeKind::Struct(struct_type),
+                                    methods: HashMap::new(),
+                                },
+                            );
                         }
                         ast::StmtKind::Fun(fun_decl) => {
                             self.namespace.insert(

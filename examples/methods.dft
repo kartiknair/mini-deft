@@ -1,0 +1,26 @@
+extern fun print_i32(n i32)
+extern fun print_f64(n f64)
+
+struct Point {
+    x f64
+    y f64
+}
+
+fun sum() f64 for Point {
+    return self.x + self.y
+}
+
+fun double() i32 for i32 {
+    return self * 2
+}
+
+fun main() {
+    var p1 = Point{x: 34.56, y: 42.14}
+    var p2 = Point{x: 1365.23, y: 2694.3}
+    
+    print_f64(p1.sum())
+    print_f64(p2.sum())
+
+    var n = 34
+    print_i32(n.double())
+}

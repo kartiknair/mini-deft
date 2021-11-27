@@ -211,19 +211,6 @@ impl<'a> Parser<'a> {
                     }),
                 });
             }
-            TokenKind::LeftBracket => {
-                let slice_type_start = self.peek()?.span.start;
-                self.current += 1;
-
-                let eltype = self.parse_type()?;
-                self.expect(TokenKind::RightBracket, "expect closing ']' in slice type")?;
-                typ = Some(ast::Type {
-                    span: slice_type_start..eltype.span.end,
-                    kind: ast::TypeKind::Slice(ast::SliceType {
-                        eltype: Box::new(eltype),
-                    }),
-                });
-            }
             TokenKind::LeftParen => {
                 // Type grouping, does not get a seperate AST node but makes is
                 // easier to clarify what you mean. For example to make `*int | str`
@@ -292,32 +279,6 @@ impl<'a> Parser<'a> {
             }
             TokenKind::LeftParen => {
                 return Err(self.error_at_current("grouping expressions are not yet implemented"))
-            }
-            TokenKind::LeftBracket => {
-                let slice_literal_start = self.current;
-                self.current += 1;
-
-                let mut exprs = Vec::new();
-                if self.peek()?.kind != TokenKind::RightBracket {
-                    loop {
-                        exprs.push(self.parse_expr()?);
-
-                        if self.peek()?.kind != TokenKind::Comma {
-                            break;
-                        } else {
-                            self.current += 1;
-                        }
-                    }
-                }
-
-                let rbracket_token =
-                    self.expect(TokenKind::RightBracket, "unclosed slice literal")?;
-
-                expr = Some(ast::Expr {
-                    kind: ast::SliceLit { exprs }.into(),
-                    span: slice_literal_start..rbracket_token.span.end,
-                    typ: None,
-                })
             }
             TokenKind::Ident => {
                 self.current += 1;
@@ -400,25 +361,6 @@ impl<'a> Parser<'a> {
                         kind: ast::CallExpr {
                             callee: Box::new(expr),
                             args,
-                        }
-                        .into(),
-                        typ: None,
-                    };
-                }
-                TokenKind::LeftBracket => {
-                    self.current += 1;
-
-                    let idx = self.parse_expr()?;
-                    let rbracket_token = self.expect(
-                        TokenKind::RightBracket,
-                        "missing closing ']' in index expression",
-                    )?;
-
-                    expr = ast::Expr {
-                        span: expr.span.start..rbracket_token.span.end,
-                        kind: ast::IdxExpr {
-                            target: Box::new(expr),
-                            idx: Box::new(idx),
                         }
                         .into(),
                         typ: None,
@@ -603,9 +545,6 @@ impl<'a> Parser<'a> {
                     panic!("internal-error: parser should have validated function declaration")
                 }
             }
-            TokenKind::Impl => {
-                Err(self.error_at_current("impl blocks have not been implemented yet"))
-            }
             TokenKind::Fun => {
                 self.current += 1;
 
@@ -639,6 +578,13 @@ impl<'a> Parser<'a> {
                     _ => Some(self.parse_type()?),
                 };
 
+                let target_type = if let TokenKind::For = self.peek()?.kind {
+                    self.current += 1;
+                    Some(self.parse_type()?)
+                } else {
+                    None
+                };
+
                 let block = if self.peek()?.kind == TokenKind::LeftBrace {
                     Some(self.parse_block()?)
                 } else {
@@ -653,6 +599,7 @@ impl<'a> Parser<'a> {
                         ident,
                         parameters,
                         return_type,
+                        target_type,
                         block,
                     }),
                     pointer: token.span,

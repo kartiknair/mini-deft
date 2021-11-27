@@ -23,7 +23,7 @@ pub enum TokenKind {
     Import,
     Export,
     Extern,
-    Impl,
+    For,
 
     // symbols
     LeftParen,
@@ -79,7 +79,7 @@ impl TokenKind {
             "import" => Some(TokenKind::Import),
             "export" => Some(TokenKind::Export),
             "extern" => Some(TokenKind::Extern),
-            "impl" => Some(TokenKind::Impl),
+            "for" => Some(TokenKind::For),
             _ => None,
         }
     }

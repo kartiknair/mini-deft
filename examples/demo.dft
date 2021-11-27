@@ -1,4 +1,4 @@
-extern fun printi32(n i32)
+extern fun print_i32(n i32)
 
 fun fib(n i32) i32 {
     if n < 2 {
@@ -9,6 +9,6 @@ fun fib(n i32) i32 {
 }
 
 fun main() i32 {
-    printi32(fib(20))
+    print_i32(fib(20))
     return 0
 }

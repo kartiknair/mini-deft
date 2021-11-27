@@ -12,13 +12,12 @@ pub enum PrimType {
     Int(u8),
     UInt(u8),
     Float(u8),
-    Str,
     Bool,
 }
 
 impl PrimType {
     pub fn is_numeric(&self) -> bool {
-        !matches!(self, Self::Str | Self::Bool)
+        !matches!(self, Self::Bool)
     }
 }
 
@@ -45,13 +44,14 @@ pub struct BoxType {
 }
 
 #[derive(Debug, Clone)]
-pub struct SliceType {
-    pub eltype: Box<Type>,
+pub struct SumType {
+    pub variants: Vec<Type>,
 }
 
 #[derive(Debug, Clone)]
-pub struct SumType {
-    pub variants: Vec<Type>,
+pub struct IfaceType {
+    pub name: String,
+    pub methods: Vec<(String, FunType)>,
 }
 
 // arbitrary named type. can resolve to any kind of type (currently
@@ -69,26 +69,43 @@ pub enum TypeKind {
     Fun(FunType),
     Struct(StructType),
     Box(BoxType),
-    Slice(SliceType),
     Sum(SumType),
+    Iface(IfaceType),
     Named(NamedType),
 }
 
 impl TypeKind {
     pub fn is_copyable(&self) -> bool {
         match self {
-            Self::Prim(prim_type) => !matches!(prim_type, PrimType::Str),
+            Self::Prim(_) => true,
             Self::Fun(_) => false,
             Self::Struct(struct_type) => !struct_type
                 .members
                 .iter()
                 .any(|(_, member_type)| !member_type.kind.is_copyable()),
             Self::Box(_) => false,
-            Self::Slice(_) => false,
             Self::Sum(_) => false,
+            Self::Iface(_) => false,
             Self::Named(_) => {
                 panic!("Named type must be resolved before reaching `is_copyable()`.")
             }
+        }
+    }
+
+    pub fn type_name(&self) -> String {
+        match self {
+            Self::Prim(prim_type) => match prim_type {
+                PrimType::Int(bit_size) => format!("i{}", bit_size),
+                PrimType::UInt(bit_size) => format!("u{}", bit_size),
+                PrimType::Float(bit_size) => format!("f{}", bit_size),
+                PrimType::Bool => "bool".to_string(),
+            },
+            Self::Iface(iface_type) => iface_type.name.clone(),
+            Self::Struct(struct_type) => struct_type.name.clone(),
+            Self::Fun(_) => todo!(),
+            Self::Box(_) => todo!(),
+            Self::Sum(_) => todo!(),
+            Self::Named(_) => todo!(),
         }
     }
 }
@@ -106,6 +123,7 @@ pub struct FunDecl {
     pub ident: token::Token,
     pub parameters: Vec<(token::Token, Type)>,
     pub return_type: Option<Type>,
+    pub target_type: Option<Type>,
     pub block: Option<BlockStmt>,
 }
 
@@ -203,12 +221,6 @@ pub struct CallExpr {
 }
 
 #[derive(Debug, Clone)]
-pub struct IdxExpr {
-    pub target: Box<Expr>,
-    pub idx: Box<Expr>,
-}
-
-#[derive(Debug, Clone)]
 pub struct AsExpr {
     pub expr: Box<Expr>,
     pub typ: Type,
@@ -227,11 +239,6 @@ pub struct StructLit {
 }
 
 #[derive(Debug, Clone)]
-pub struct SliceLit {
-    pub exprs: Vec<Expr>,
-}
-
-#[derive(Debug, Clone)]
 pub struct Lit {
     pub token: token::Token,
 }
@@ -242,11 +249,9 @@ pub enum ExprKind {
     Binary(BinaryExpr),
     Var(VarExpr),
     Call(CallExpr),
-    Idx(IdxExpr),
     As(AsExpr),
     Is(IsExpr),
     StructLit(StructLit),
-    SliceLit(SliceLit),
     Lit(Lit),
 }
 
