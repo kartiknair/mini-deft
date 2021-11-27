@@ -703,10 +703,10 @@ impl<'a> Analyzer<'a> {
                                     span: binary_expr.right.span.clone(),
                                 });
                             }
-                        } else {
-                            self.analyze_expr(&mut binary_expr.left)?;
                         }
                     }
+
+                    self.analyze_expr(&mut binary_expr.left)?;
 
                     if let ast::ExprKind::Var(var_expr) = &binary_expr.right.kind {
                         let member_name = self.file.lexeme(&var_expr.ident.span);
@@ -794,11 +794,11 @@ impl<'a> Analyzer<'a> {
                                     | token::TokenKind::Percent => {
                                         if !prim_type.is_numeric() {
                                             return Err(Error {
-                                            message:
-                                                "binary expressions are only valid on primitive numeric operands"
-                                                    .into(),
-                                            span: expr.span.clone(),
-                                        });
+                                                message:
+                                                    "binary expressions are only valid on primitive numeric operands"
+                                                        .into(),
+                                                span: expr.span.clone(),
+                                            });
                                         }
 
                                         expr.typ = Some(left_expr_type.clone());
@@ -971,8 +971,52 @@ impl<'a> Analyzer<'a> {
             }
             ast::ExprKind::StructLit(struct_lit) => {
                 self.analyze_type(&mut struct_lit.typ)?;
-                // TODO: Make sure initializers are correct type
-                expr.typ = Some(struct_lit.typ.clone());
+
+                if let ast::TypeKind::Struct(struct_type) = &struct_lit.typ.kind {
+                    if struct_lit.inits.len() != struct_type.members.len() {
+                        return Err(Error {
+                            message: "incorrect number of initializers".into(),
+                            span: expr.span.clone(),
+                        });
+                    }
+
+                    for (init_ident, init_expr) in struct_lit.inits.iter_mut() {
+                        let found_member_type = if let Some(found_member) =
+                            struct_type.members.iter().find(|(member_name, _)| {
+                                self.file.lexeme(&init_ident.span) == member_name
+                            }) {
+                            Some(&found_member.1)
+                        } else {
+                            None
+                        };
+
+                        self.analyze_expr(init_expr)?;
+                        if let Some(found_member_type) = found_member_type {
+                            if !self.is_assignable(init_expr, found_member_type, false)? {
+                                return Err(Error {
+                                    message: "invalid initializer for member in struct literal"
+                                        .into(),
+                                    span: init_ident.span.clone(),
+                                });
+                            }
+                        } else {
+                            return Err(Error {
+                                message: format!(
+                                    "struct type has no member named: '{}'",
+                                    self.file.lexeme(&init_ident.span)
+                                ),
+                                span: init_ident.span.clone(),
+                            });
+                        }
+                    }
+
+                    expr.typ = Some(struct_lit.typ.clone());
+                } else {
+                    return Err(Error {
+                        message: "struct literal must use struct type".into(),
+                        span: struct_lit.typ.span.clone(),
+                    });
+                }
             }
             ast::ExprKind::Lit(lit) => {
                 expr.typ = Some(match &lit.token.kind {
