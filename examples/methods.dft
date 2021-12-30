@@ -1,5 +1,5 @@
-extern fun print_i32(n i32)
-extern fun print_f64(n f64)
+extern fun println_i32(n i32)
+extern fun println_f64(n f64)
 
 struct Point {
     x f64
@@ -18,9 +18,9 @@ fun main() {
     var p1 = Point{x: 34.56, y: 42.14}
     var p2 = Point{x: 1365.23, y: 2694.3}
     
-    print_f64(p1.sum())
-    print_f64(p2.sum())
+    println_f64(p1.sum())
+    println_f64(p2.sum())
 
     var n = 34
-    print_i32(n.double())
+    println_i32(n.double())
 }

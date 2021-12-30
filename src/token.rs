@@ -19,12 +19,11 @@ pub enum TokenKind {
     Else,
     While,
     As,
-    Is,
     Import,
     Export,
     Extern,
     For,
-    Iface,
+    Copy,
 
     // symbols
     LeftParen,
@@ -76,18 +75,17 @@ impl TokenKind {
             "else" => Some(TokenKind::Else),
             "while" => Some(TokenKind::While),
             "as" => Some(TokenKind::As),
-            "is" => Some(TokenKind::Is),
             "import" => Some(TokenKind::Import),
             "export" => Some(TokenKind::Export),
             "extern" => Some(TokenKind::Extern),
             "for" => Some(TokenKind::For),
-            "iface" => Some(TokenKind::Iface),
+            "copy" => Some(TokenKind::Copy),
             _ => None,
         }
     }
 
     pub fn is_prefix_op(&self) -> bool {
-        matches!(*self, Self::Minus | Self::Bang)
+        matches!(*self, Self::Minus | Self::Bang | Self::Tilde)
     }
 
     pub fn is_binary_op(&self) -> bool {

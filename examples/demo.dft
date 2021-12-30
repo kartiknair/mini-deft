@@ -1,13 +1,23 @@
-extern fun print_i32(n i32)
+extern fun pow_f64(base f64, power f64) f64
+extern fun sqrt_f64(n f64) f64
+
+extern fun println_i32(n i32)
+extern fun println_f64(n f64)
+
+struct Point {
+    x f64
+    y f64
+}
 
 struct Line {
     begin Point
     end   Point
 }
 
-struct Point {
-    x f64
-    y f64
+fun distance() f64 for Line {
+    return sqrt_f64(
+        pow_f64(self.end.x - self.begin.x, 2.00) + pow_f64(self.end.y - self.begin.y, 2.00),
+    )
 }
 
 fun fib(n i32) i32 {
@@ -19,6 +29,8 @@ fun fib(n i32) i32 {
 }
 
 fun main() i32 {
-    print_i32(fib(20))
+    var l1 = Line{begin: Point{x: 3.00, y: 2.00}, end: Point{x: 7.00, y: 8.00}}    
+    println_f64(l1.distance())
+    println_i32(fib(8))
     return 0
 }

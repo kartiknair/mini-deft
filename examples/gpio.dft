@@ -1,0 +1,24 @@
+extern fun gpio_init()
+extern fun gpio_terminate()
+extern fun gpio_set_mode(pin i32, mode i32)
+extern fun gpio_write(pin i32, value i32)
+extern fun sleep_ms(duration i32)
+
+fun main() {
+	var GPIO_MODE_INPUT = 0
+	var GPIO_MODE_OUTPUT = 1
+
+	gpio_init()
+
+	var led_pin = 26
+	gpio_set_mode(led_pin, GPIO_MODE_OUTPUT)
+
+	while true {
+		gpio_write(led_pin, 1)
+		sleep_ms(500)
+		gpio_write(led_pin, 0)
+		sleep_ms(500)
+	}
+
+	gpio_terminate()
+}

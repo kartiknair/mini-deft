@@ -1,0 +1,4 @@
+fun woah<T any>(something T) T {
+    var cool T
+    cool = something
+}

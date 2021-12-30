@@ -45,16 +45,32 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
             },
             ast::TypeKind::Box(box_type) => self
                 .gen_type(&*box_type.eltype)
-                .ptr_type(AddressSpace::Generic)
                 .into(),
+            ast::TypeKind::Arr(arr_type) => {
+                // prefixed with `.` to avoic collision with user-defined types
+                let prefixed_name = format!(".{}", typ.kind.type_name());
+
+                self.module
+                    .get_struct_type(&prefixed_name)
+                    .unwrap_or_else(|| {
+                        let blank_st = self.context.opaque_struct_type(&prefixed_name);
+                        blank_st.set_body(
+                            &[
+                                self.gen_type(&*arr_type.eltype).ptr_type(AddressSpace::Generic).into(),
+                                self.context.i64_type().into(),
+                            ],
+                            false,
+                        );
+                        blank_st
+                    })
+                    .into()
+            }
             ast::TypeKind::Fun(_) => todo!(),
             ast::TypeKind::Struct(struct_type) => self
                 .module
                 .get_struct_type(&struct_type.name)
                 .unwrap()
                 .into(),
-            ast::TypeKind::Iface(_) => todo!(),
-            ast::TypeKind::Sum(_) => todo!(),
             ast::TypeKind::Named(_) => panic!("internal-error: named type should be resolved before generation"),
         }
     }
@@ -71,7 +87,7 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
     fn declare_fun(&mut self, func: &ast::FunDecl) -> FunctionValue<'ctx> {
         let fun_name = if let Some(target_type) = &func.target_type {
             format!(
-                "{}__{}",
+                "{}.{}",
                 target_type.kind.type_name(),
                 self.file.lexeme(&func.ident.span)
             )
@@ -83,24 +99,14 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
             let mut tmp_params = func
                 .parameters
                 .iter()
-                .map(|(_, typ)| {
-                    if let ast::TypeKind::Struct(_) = &typ.kind {
-                        self.gen_type(typ).ptr_type(AddressSpace::Generic).into()
-                    } else {
-                        self.gen_type(typ).into()
-                    }
-                })
+                .map(|(_, typ)| self.gen_type(typ).ptr_type(AddressSpace::Generic).into())
                 .collect::<Vec<BasicMetadataTypeEnum>>();
             let parameters = if let Some(target_type) = &func.target_type {
                 tmp_params.insert(
                     0,
-                    if let ast::TypeKind::Struct(_) = &target_type.kind {
-                        self.gen_type(target_type)
-                            .ptr_type(AddressSpace::Generic)
-                            .into()
-                    } else {
-                        self.gen_type(target_type).into()
-                    },
+                    self.gen_type(target_type)
+                        .ptr_type(AddressSpace::Generic)
+                        .into(),
                 );
                 tmp_params
             } else {
@@ -162,17 +168,7 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                     } else {
                         self.file.lexeme(&func.parameters[i].0.span).to_string()
                     },
-                    if let ast::TypeKind::Struct(_) = if func.target_type.is_some() && i == 0 {
-                        &func.target_type.as_ref().unwrap().kind
-                    } else {
-                        &func.parameters[i].1.kind
-                    } {
-                        param.into_pointer_value()
-                    } else {
-                        let param_alloca = self.builder.build_alloca(param.get_type(), "");
-                        self.builder.build_store(param_alloca, param);
-                        param_alloca
-                    },
+                    param.into_pointer_value(),
                 );
             }
 
@@ -209,6 +205,82 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
         func_decl
     }
 
+    fn gen_expr_as_ptr(&mut self, expr: &ast::Expr) -> inkwell::values::PointerValue<'ctx> {
+        if expr.kind.is_lvalue() {
+            match &expr.kind {
+                ast::ExprKind::Var(var_expr) => (*self
+                    .namespace
+                    .get(self.file.lexeme(&var_expr.ident.span))
+                    .unwrap())
+                .into(),
+                ast::ExprKind::Idx(idx_expr) => {
+                    let ptr_to_el = self.gen_ptr_to_arr_el(idx_expr);
+                    ptr_to_el.into()
+                }
+                ast::ExprKind::Binary(get_expr) => {
+                    let struct_value = self.gen_expr_as_ptr(&*get_expr.left);
+
+                    if let ast::TypeKind::Struct(struct_type) =
+                        &get_expr.left.typ.as_ref().unwrap().kind
+                    {
+                        if let ast::ExprKind::Var(var_expr) = &get_expr.right.kind {
+                            let member_name = self.file.lexeme(&var_expr.ident.span);
+                            let member_idx = struct_type
+                                .members
+                                .iter()
+                                .position(|(nested_member_name, _)| {
+                                    nested_member_name == member_name
+                                })
+                                .unwrap();
+                            let member_ptr = self
+                                .builder
+                                .build_struct_gep(struct_value, member_idx as u32, "")
+                                .unwrap();
+                            member_ptr.into()
+                        } else {
+                            unreachable!()
+                        }
+                    } else {
+                        unreachable!()
+                    }
+                }
+                _ => panic!(
+                    "pointer expression generation for lvalue kind {:?} has not been implemented",
+                    expr.kind
+                ),
+            }
+        } else {
+            // Create a temp alloca for the rvalue
+            let alloca = self
+                .builder
+                .build_alloca(self.gen_type(expr.typ.as_ref().unwrap()), "");
+            self.builder.build_store(alloca, self.gen_expr(expr));
+            alloca
+        }
+    }
+
+    fn gen_ptr_to_arr_el(
+        &mut self,
+        idx_expr: &ast::IdxExpr,
+    ) -> inkwell::values::PointerValue<'ctx> {
+        let genned_target = self.gen_expr_as_ptr(&idx_expr.target);
+        let genned_idx = self.gen_expr(&idx_expr.idx);
+
+        let buffer = self
+            .builder
+            .build_load(
+                self.builder.build_struct_gep(genned_target, 0, "").unwrap(),
+                "",
+            )
+            .into_pointer_value();
+        let ptr_to_el = unsafe {
+            self.builder
+                .build_gep(buffer, &[genned_idx.into_int_value()], "")
+        };
+
+        ptr_to_el
+    }
+
     fn gen_expr(&mut self, expr: &ast::Expr) -> BasicValueEnum<'ctx> {
         match &expr.kind {
             ast::ExprKind::Unary(unary_expr) => {
@@ -241,6 +313,46 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                         },
                         _ => unreachable!(),
                     },
+                    token::TokenKind::Tilde => {
+                        let malloc_decl = self.module.get_function("malloc").unwrap_or_else(|| {
+                            self.module.add_function(
+                                "malloc",
+                                self.context
+                                    .i8_type()
+                                    .ptr_type(AddressSpace::Generic)
+                                    .fn_type(&[self.context.i64_type().into()], false),
+                                None,
+                            )
+                        });
+
+                        let gep = unsafe {
+                            self.builder.build_gep(
+                                self.gen_type(unary_expr.expr.typ.as_ref().unwrap())
+                                    .ptr_type(AddressSpace::Generic)
+                                    .const_null(),
+                                &[self.context.i32_type().const_int(1, false)],
+                                "",
+                            )
+                        };
+
+                        let size =
+                            self.builder
+                                .build_ptr_to_int(gep, self.context.i64_type(), "name");
+                        let heap_ptr = self
+                            .builder
+                            .build_call(malloc_decl, &[size.into()], "")
+                            .try_as_basic_value()
+                            .unwrap_left();
+
+                        let casted_ptr = self.builder.build_bitcast(
+                            heap_ptr,
+                            self.gen_type(unary_expr.expr.typ.as_ref().unwrap())
+                                .ptr_type(AddressSpace::Generic),
+                            "",
+                        );
+
+                        casted_ptr.into()
+                    }
                     _ => unreachable!(),
                 }
             }
@@ -251,18 +363,19 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                         ast::ExprKind::Var(var_expr) => {
                             let ptr = *self.namespace.get(self.file.lexeme(&var_expr.ident.span)).unwrap();
                             self.builder.build_store(ptr, self.gen_expr(&*binary_expr.right));
-                            if let ast::TypeKind::Struct(_) = &binary_expr.right.typ.as_ref().unwrap().kind {
-                                ptr.into()
-                            } else {
-                                self.builder.build_load(ptr, "")
-                            }
+                            self.builder.build_load(ptr, "")
+                        }
+                        ast::ExprKind::Idx(idx_expr) => {
+                            let ptr_to_el = self.gen_ptr_to_arr_el(idx_expr);
+                            self.builder.build_store(ptr_to_el, self.gen_expr(&*binary_expr.right));
+                            self.builder.build_load(ptr_to_el, "")
                         }
                         ast::ExprKind::Binary(get_expr) => {
                             if get_expr.op.kind != token::TokenKind::Dot {
                                 panic!("internal-error: can only generate assignment to `.` get expressions")
                             }
 
-                            let struct_value = self.gen_expr(&*get_expr.left);
+                            let struct_value = self.gen_expr_as_ptr(&*get_expr.left);
                             let new_member_value = self.gen_expr(&*binary_expr.right);
 
                             if let ast::TypeKind::Struct(struct_type) = &get_expr.left.typ.as_ref().unwrap().kind {
@@ -277,7 +390,7 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                                         .unwrap();
                                     let member_ptr = self.builder
                                         .build_struct_gep(
-                                            struct_value.into_pointer_value(),
+                                            struct_value,
                                             member_idx as u32,
                                             "",
                                         ).unwrap();
@@ -300,7 +413,7 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                 }
 
                 token::TokenKind::Dot => {
-                    let struct_value = self.gen_expr(&*binary_expr.left);
+                    let struct_value = self.gen_expr_as_ptr(&*binary_expr.left);
 
                     if let ast::TypeKind::Struct(struct_type) =
                         &binary_expr.left.typ.as_ref().unwrap().kind
@@ -316,11 +429,7 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                                 .unwrap();
                             let member_ptr = self
                                 .builder
-                                .build_struct_gep(
-                                    struct_value.into_pointer_value(),
-                                    member_idx as u32,
-                                    "",
-                                )
+                                .build_struct_gep(struct_value, member_idx as u32, "")
                                 .unwrap();
                             if let ast::TypeKind::Struct(_) = &expr.typ.as_ref().unwrap().kind {
                                 member_ptr.into()
@@ -619,12 +728,7 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                     .get(self.file.lexeme(&var_expr.ident.span))
                     .unwrap();
 
-                if let ast::TypeKind::Struct(_) = &expr.typ.as_ref().unwrap().kind {
-                    // Structs are passed around directly by a pointer to them
-                    var_ptr.into()
-                } else {
-                    self.builder.build_load(var_ptr, "")
-                }
+                self.builder.build_load(var_ptr, "")
             }
             ast::ExprKind::Call(call_expr) => {
                 if let ast::ExprKind::Var(var_expr) = &call_expr.callee.kind {
@@ -632,10 +736,11 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                         .module
                         .get_function(self.file.lexeme(&var_expr.ident.span))
                     {
-                        let mut genned_args = Vec::new();
-                        for arg in &call_expr.args {
-                            genned_args.push(self.gen_expr(arg).into());
-                        }
+                        let genned_args = call_expr
+                            .args
+                            .iter()
+                            .map(|expr| self.gen_expr_as_ptr(expr).into())
+                            .collect::<Vec<_>>();
 
                         if let Either::Left(value) = self
                             .builder
@@ -652,17 +757,19 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                 } else if let ast::ExprKind::Binary(binary_expr) = &call_expr.callee.kind {
                     if binary_expr.op.kind == token::TokenKind::Dot {
                         if let ast::ExprKind::Var(var_expr) = &binary_expr.right.kind {
-                            // Transform `target.method(42)` to `target__method(target, 42)`
-                            let target = self.gen_expr(&*binary_expr.left).into();
+                            // Transform `target.method(42)` to `target.method(target, 42)`
+                            let target_ptr = self.gen_expr_as_ptr(&*binary_expr.left);
                             if let Some(func) = self.module.get_function(&format!(
-                                "{}__{}",
+                                "{}.{}",
                                 binary_expr.left.typ.as_ref().unwrap().kind.type_name(),
                                 self.file.lexeme(&var_expr.ident.span)
                             )) {
-                                let mut genned_args = vec![target];
-                                for arg in &call_expr.args {
-                                    genned_args.push(self.gen_expr(arg).into());
-                                }
+                                let mut genned_args = call_expr
+                                    .args
+                                    .iter()
+                                    .map(|expr| self.gen_expr_as_ptr(expr).into())
+                                    .collect::<Vec<_>>();
+                                genned_args.insert(0, target_ptr.into());
 
                                 if let Either::Left(value) = self
                                     .builder
@@ -687,20 +794,125 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                 }
             }
             ast::ExprKind::As(_) => todo!(),
-            ast::ExprKind::Is(_) => todo!(),
+            ast::ExprKind::Idx(idx_expr) => {
+                let ptr_to_el = self.gen_ptr_to_arr_el(idx_expr);
+                self.builder.build_load(ptr_to_el, "")
+            }
+
             ast::ExprKind::StructLit(struct_lit) => {
-                let struct_type = self.gen_type(&struct_lit.typ);
+                let struct_type = self.gen_type(&struct_lit.typ).into_struct_type();
 
                 let mut genned_inits = Vec::new();
                 for (_, init) in &struct_lit.inits {
                     genned_inits.push(self.gen_expr(init));
                 }
 
-                if let BasicTypeEnum::StructType(struct_type) = struct_type {
-                    struct_type.const_named_struct(&genned_inits).into()
+                let struct_alloca = self.builder.build_alloca(struct_type, "");
+                for (i, init) in genned_inits.iter().enumerate() {
+                    self.builder.build_store(
+                        self.builder
+                            .build_struct_gep(struct_alloca, i as u32, "")
+                            .unwrap(),
+                        *init,
+                    );
+                }
+
+                self.builder.build_load(struct_alloca, "")
+            }
+            ast::ExprKind::ArrLit(arr_lit) => {
+                let expr_type = expr.typ.as_ref().unwrap();
+                let prefixed_name = format!(".{}", expr_type.kind.type_name());
+                let _ = self.gen_type(expr_type); // ensure that the array struct type exists
+
+                if let ast::TypeKind::Arr(arr_type) = &expr.typ.as_ref().unwrap().kind {
+                    if !arr_lit.elements.is_empty() {
+                        let malloc_decl = self.module.get_function("malloc").unwrap_or_else(|| {
+                            self.module.add_function(
+                                "malloc",
+                                self.context
+                                    .i8_type()
+                                    .ptr_type(AddressSpace::Generic)
+                                    .fn_type(&[self.context.i64_type().into()], false),
+                                None,
+                            )
+                        });
+
+                        let sizeof_gep = unsafe {
+                            self.builder.build_gep(
+                                self.gen_type(&arr_type.eltype)
+                                    .ptr_type(AddressSpace::Generic)
+                                    .const_null(),
+                                &[self.context.i32_type().const_int(1, false)],
+                                "",
+                            )
+                        };
+
+                        let el_sizeof = self.builder.build_ptr_to_int(
+                            sizeof_gep,
+                            self.context.i64_type(),
+                            "name",
+                        );
+                        let total_sizeof = self.builder.build_int_mul(
+                            el_sizeof,
+                            self.context
+                                .i64_type()
+                                .const_int(arr_lit.elements.len() as u64, false),
+                            "",
+                        );
+
+                        let heap_ptr = self
+                            .builder
+                            .build_call(malloc_decl, &[total_sizeof.into()], "")
+                            .try_as_basic_value()
+                            .unwrap_left();
+                        let casted_ptr = self.builder.build_pointer_cast(
+                            heap_ptr.into_pointer_value(),
+                            self.gen_type(&arr_type.eltype)
+                                .ptr_type(AddressSpace::Generic),
+                            "",
+                        );
+
+                        for (i, el) in arr_lit.elements.iter().enumerate() {
+                            let genned_el = self.gen_expr(el);
+                            let ptr_to_el_in_buffer = unsafe {
+                                self.builder.build_gep(
+                                    casted_ptr,
+                                    &[self.context.i64_type().const_int(i as u64, false)],
+                                    "",
+                                )
+                            };
+                            self.builder.build_store(ptr_to_el_in_buffer, genned_el);
+                        }
+
+                        let arr_alloca = self
+                            .builder
+                            .build_alloca(self.module.get_struct_type(&prefixed_name).unwrap(), "");
+                        self.builder.build_store(
+                            self.builder.build_struct_gep(arr_alloca, 0, "").unwrap(),
+                            casted_ptr,
+                        );
+                        self.builder.build_store(
+                            self.builder.build_struct_gep(arr_alloca, 1, "").unwrap(),
+                            self.context
+                                .i64_type()
+                                .const_int(arr_lit.elements.len() as u64, false),
+                        );
+                        self.builder.build_load(arr_alloca, "")
+                    } else {
+                        self.module
+                            .get_struct_type(&prefixed_name)
+                            .unwrap()
+                            .const_named_struct(&[
+                                self.gen_type(&arr_type.eltype)
+                                    .ptr_type(AddressSpace::Generic)
+                                    .const_null()
+                                    .into(),
+                                self.context.i64_type().const_int(0, false).into(),
+                            ])
+                            .into()
+                    }
                 } else {
-                    // I can't even imagine how much I'd have to mess up to see this
-                    panic!("internal-error: generated struct type is not a struct type")
+                    unreachable!()
                 }
             }
             ast::ExprKind::Lit(lit) => match &lit.token.kind {

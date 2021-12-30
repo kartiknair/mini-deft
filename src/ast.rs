@@ -34,24 +34,13 @@ pub struct StructType {
 }
 
 #[derive(Debug, Clone)]
-pub struct IfaceType {
-    pub name: String,
-    pub methods: Vec<(String, FunType)>,
-}
-
-#[derive(Debug, Clone)]
-pub struct PtrType {
+pub struct ArrType {
     pub eltype: Box<Type>,
 }
 
 #[derive(Debug, Clone)]
 pub struct BoxType {
     pub eltype: Box<Type>,
-}
-
-#[derive(Debug, Clone)]
-pub struct SumType {
-    pub variants: Vec<Type>,
 }
 
 // arbitrary named type. can resolve to any kind of type (currently
@@ -69,8 +58,7 @@ pub enum TypeKind {
     Fun(FunType),
     Struct(StructType),
     Box(BoxType),
-    Sum(SumType),
-    Iface(IfaceType),
+    Arr(ArrType),
     Named(NamedType),
 }
 
@@ -84,8 +72,7 @@ impl TypeKind {
                 .iter()
                 .any(|(_, member_type)| !member_type.kind.is_copyable()),
             Self::Box(_) => false,
-            Self::Sum(_) => false,
-            Self::Iface(_) => false,
+            Self::Arr(_) => false,
             Self::Named(_) => {
                 panic!("Named type must be resolved before reaching `is_copyable()`.")
             }
@@ -100,11 +87,11 @@ impl TypeKind {
                 PrimType::Float(bit_size) => format!("f{}", bit_size),
                 PrimType::Bool => "bool".to_string(),
             },
-            Self::Iface(iface_type) => iface_type.name.clone(),
             Self::Struct(struct_type) => struct_type.name.clone(),
+            Self::Box(box_type) => format!("box.{}", box_type.eltype.kind.type_name()),
+            Self::Arr(arr_type) => format!("arr.{}", arr_type.eltype.kind.type_name()),
+
             Self::Fun(_) => todo!(),
-            Self::Box(_) => todo!(),
-            Self::Sum(_) => todo!(),
             Self::Named(_) => todo!(),
         }
     }
@@ -132,21 +119,6 @@ pub struct StructDecl {
     pub exported: bool,
     pub ident: token::Token,
     pub members: Vec<(token::Token, Type)>,
-}
-
-// Different from normal `FunDecl` since parameter names & body are not required and it cannot be external or exported.
-#[derive(Debug, Clone)]
-pub struct IfaceFunDecl {
-    pub ident: token::Token,
-    pub parameters: Vec<Type>,
-    pub return_type: Option<Type>,
-}
-
-#[derive(Debug, Clone)]
-pub struct IfaceDecl {
-    pub exported: bool,
-    pub ident: token::Token,
-    pub methods: Vec<IfaceFunDecl>,
 }
 
 #[derive(Debug, Clone)]
@@ -195,7 +167,6 @@ pub struct BlockStmt {
 pub enum StmtKind {
     Fun(FunDecl),
     Struct(StructDecl),
-    Iface(IfaceDecl),
     Import(ImportDecl),
 
     Var(VarStmt),
@@ -226,6 +197,12 @@ pub struct BinaryExpr {
 }
 
 #[derive(Debug, Clone)]
+pub struct IdxExpr {
+    pub target: Box<Expr>,
+    pub idx: Box<Expr>,
+}
+
+#[derive(Debug, Clone)]
 pub struct VarExpr {
     pub ident: token::Token,
 }
@@ -243,15 +220,14 @@ pub struct AsExpr {
 }
 
 #[derive(Debug, Clone)]
-pub struct IsExpr {
-    pub expr: Box<Expr>,
-    pub typ: Type,
-}
-
-#[derive(Debug, Clone)]
 pub struct StructLit {
     pub typ: Type,
     pub inits: Vec<(token::Token, Expr)>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ArrLit {
+    pub elements: Vec<Expr>,
 }
 
 #[derive(Debug, Clone)]
@@ -263,18 +239,19 @@ pub struct Lit {
 pub enum ExprKind {
     Unary(UnaryExpr),
     Binary(BinaryExpr),
+    Idx(IdxExpr),
     Var(VarExpr),
     Call(CallExpr),
     As(AsExpr),
-    Is(IsExpr),
     StructLit(StructLit),
+    ArrLit(ArrLit),
     Lit(Lit),
 }
 
 impl ExprKind {
     pub fn is_lvalue(&self) -> bool {
         match self {
-            Self::Var(_) => true,
+            Self::Var(_) | Self::Idx(_) => true,
             Self::Binary(binary_expr) => binary_expr.op.kind == token::TokenKind::Dot,
             _ => false,
         }

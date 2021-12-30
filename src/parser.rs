@@ -228,30 +228,6 @@ impl<'a> Parser<'a> {
             _ => {}
         }
 
-        while self.peek()?.kind == TokenKind::Or {
-            self.current += 1;
-            if let Some(typ) = &mut typ {
-                if let ast::TypeKind::Sum(sum_type) = &mut typ.kind {
-                    let new_variant = self.parse_type()?;
-                    typ.span = typ.span.start..new_variant.span.end;
-                    sum_type.variants.push(new_variant);
-                } else {
-                    let mut sum_type = ast::SumType {
-                        variants: vec![typ.clone()],
-                    };
-                    sum_type.variants.push(self.parse_type()?);
-                    *typ = ast::Type {
-                        span: sum_type.variants[0].span.start..sum_type.variants[1].span.end,
-                        kind: ast::TypeKind::Sum(sum_type),
-                    };
-                }
-            } else {
-                return Err(
-                    self.error_at_current("unexpected '|', require initial type for sum type")
-                );
-            }
-        }
-
         if let Some(typ) = typ {
             Ok(typ)
         } else {
@@ -279,6 +255,32 @@ impl<'a> Parser<'a> {
             }
             TokenKind::LeftParen => {
                 return Err(self.error_at_current("grouping expressions are not yet implemented"))
+            }
+            TokenKind::LeftBracket => {
+                let slice_literal_start = self.current;
+                self.current += 1;
+
+                let mut elements = Vec::new();
+                if self.peek()?.kind != TokenKind::RightBracket {
+                    loop {
+                        elements.push(self.parse_expr()?);
+
+                        if self.peek()?.kind != TokenKind::Comma {
+                            break;
+                        } else {
+                            self.current += 1;
+                        }
+                    }
+                }
+
+                let rbracket_token =
+                    self.expect(TokenKind::RightBracket, "unclosed array literal")?;
+
+                expr = Some(ast::Expr {
+                    kind: ast::ArrLit { elements }.into(),
+                    span: slice_literal_start..rbracket_token.span.end,
+                    typ: None,
+                })
             }
             TokenKind::Ident => {
                 self.current += 1;
@@ -330,7 +332,6 @@ impl<'a> Parser<'a> {
         while self.peek()?.kind == TokenKind::LeftParen
             || self.peek()?.kind == TokenKind::LeftBracket
             || self.peek()?.kind == TokenKind::As
-            || self.peek()?.kind == TokenKind::Is
             || self.peek()?.kind == TokenKind::Caret
             || self.peek()?.kind == TokenKind::Dot
         {
@@ -364,25 +365,31 @@ impl<'a> Parser<'a> {
                         typ: None,
                     };
                 }
+                TokenKind::LeftBracket => {
+                    self.current += 1;
+
+                    let idx = self.parse_expr()?;
+                    let rbracket_token = self.expect(
+                        TokenKind::RightBracket,
+                        "missing closing ']' in index expression",
+                    )?;
+
+                    expr = ast::Expr {
+                        span: expr.span.start..rbracket_token.span.end,
+                        kind: ast::IdxExpr {
+                            target: Box::new(expr),
+                            idx: Box::new(idx),
+                        }
+                        .into(),
+                        typ: None,
+                    };
+                }
                 TokenKind::As => {
                     self.current += 1;
                     let typ = self.parse_type()?;
                     expr = ast::Expr {
                         span: expr.span.start..typ.span.end,
                         kind: ast::AsExpr {
-                            expr: Box::new(expr),
-                            typ,
-                        }
-                        .into(),
-                        typ: None,
-                    }
-                }
-                TokenKind::Is => {
-                    self.current += 1;
-                    let typ = self.parse_type()?;
-                    expr = ast::Expr {
-                        span: expr.span.start..typ.span.end,
-                        kind: ast::IsExpr {
                             expr: Box::new(expr),
                             typ,
                         }
@@ -608,7 +615,6 @@ impl<'a> Parser<'a> {
 
                 let ident = self.expect(TokenKind::Ident, "expect struct name")?.clone();
                 self.expect(TokenKind::LeftBrace, "expect struct body")?;
-
                 if self.peek()?.kind == TokenKind::RightBrace {
                     return Err(self.error_at_current("empty struct is illegal"));
                 }
@@ -638,76 +644,6 @@ impl<'a> Parser<'a> {
                     pointer: token.span.clone(),
                 })
             }
-            TokenKind::Iface => {
-                self.current += 1;
-
-                let ident = self
-                    .expect(TokenKind::Ident, "expect interface name")?
-                    .clone();
-                self.expect(TokenKind::LeftBrace, "expect interface body")?;
-
-                if self.peek()?.kind == TokenKind::RightBrace {
-                    return Err(self.error_at_current("empty interface is illegal"));
-                }
-                let mut methods = Vec::new();
-                while self.peek()?.kind != TokenKind::RightBrace {
-                    let ident = self
-                        .expect(TokenKind::Ident, "expect interface method name")?
-                        .clone();
-                    let mut parameters = Vec::new();
-                    self.expect(
-                        TokenKind::LeftParen,
-                        "expect '(' after interface method name",
-                    )?;
-
-                    if self.peek()?.kind != TokenKind::RightParen {
-                        loop {
-                            parameters.push(self.parse_type()?);
-
-                            if self.peek()?.kind != TokenKind::Comma {
-                                break;
-                            } else {
-                                self.current += 1;
-                            }
-                        }
-                    }
-
-                    self.expect(TokenKind::RightParen, "missing closing ')'")?;
-
-                    let return_type = if self.peek()?.kind != TokenKind::Semicolon {
-                        Some(self.parse_type()?)
-                    } else {
-                        None
-                    };
-
-                    self.expect(
-                        TokenKind::Semicolon,
-                        "expect ';' after interface method type",
-                    )?;
-
-                    methods.push(ast::IfaceFunDecl {
-                        ident,
-                        parameters,
-                        return_type,
-                    });
-                }
-
-                self.expect(TokenKind::RightBrace, "unclosed interface body")?;
-
-                if self.peek()?.kind == TokenKind::Semicolon {
-                    self.current += 1; // optional trailing ';'
-                }
-
-                Ok(ast::Stmt {
-                    kind: ast::StmtKind::Iface(ast::IfaceDecl {
-                        exported: false,
-                        ident,
-                        methods,
-                    }),
-                    pointer: token.span.clone(),
-                })
-            }
-
             TokenKind::Var => {
                 self.current += 1;
 

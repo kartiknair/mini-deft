@@ -103,29 +103,13 @@ impl<'a> Analyzer<'a> {
                 let right_struct_type: &ast::StructType = right.kind.borrow().try_into().unwrap();
                 left_struct_type.name == right_struct_type.name
             }
+            ast::TypeKind::Arr(left_arr_type) => {
+                let right_arr_type: &ast::ArrType = right.kind.borrow().try_into().unwrap();
+                self.type_eq(&left_arr_type.eltype, &right_arr_type.eltype)
+            }
             ast::TypeKind::Box(left_box_type) => {
                 let right_box_type: &ast::BoxType = right.kind.borrow().try_into().unwrap();
                 self.type_eq(&left_box_type.eltype, &right_box_type.eltype)
-            }
-            ast::TypeKind::Sum(left_sum_type) => {
-                let right_sum_type: &ast::SumType = right.kind.borrow().try_into().unwrap();
-
-                if left_sum_type.variants.len() == right_sum_type.variants.len() {
-                    let mut every_variant_same = true;
-                    for variant in &left_sum_type.variants {
-                        if !right_sum_type
-                            .variants
-                            .iter()
-                            .any(|right_variant| self.type_eq(variant, right_variant))
-                        {
-                            every_variant_same = false
-                        }
-                    }
-
-                    every_variant_same
-                } else {
-                    false
-                }
             }
             _ => {
                 panic!(
@@ -138,11 +122,6 @@ impl<'a> Analyzer<'a> {
 
     fn analyze_type(&self, typ: &mut ast::Type) -> Result<(), Error> {
         match &mut typ.kind {
-            ast::TypeKind::Sum(sum_type) => {
-                for variant in sum_type.variants.iter_mut() {
-                    self.analyze_type(variant)?;
-                }
-            }
             ast::TypeKind::Box(box_type) => {
                 self.analyze_type(&mut box_type.eltype)?;
             }
@@ -318,41 +297,6 @@ impl<'a> Analyzer<'a> {
                     },
                 );
             }
-            ast::StmtKind::Iface(iface_decl) => {
-                let iface_name = self.file.lexeme(&iface_decl.ident.span).to_string();
-                let iface_type = ast::IfaceType {
-                    name: iface_name.clone(),
-                    methods: iface_decl
-                        .methods
-                        .iter()
-                        .map(|method_decl| {
-                            (
-                                self.file.lexeme(&method_decl.ident.span).to_string(),
-                                ast::FunType {
-                                    parameters: method_decl.parameters.clone(),
-                                    returns: if let Some(return_type) = &method_decl.return_type {
-                                        Some(Box::new(return_type.clone()))
-                                    } else {
-                                        None
-                                    },
-                                },
-                            )
-                        })
-                        .collect(),
-                };
-                let mut methods = HashMap::new();
-                for method in &iface_type.methods {
-                    methods.insert(method.0.clone(), method.1.clone());
-                }
-
-                self.typespace.insert(
-                    iface_name,
-                    TypeInfo {
-                        kind: ast::TypeKind::Iface(iface_type),
-                        methods,
-                    },
-                );
-            }
 
             ast::StmtKind::Var(var_stmt) => {
                 if let Some(typ) = &mut var_stmt.typ {
@@ -454,6 +398,9 @@ impl<'a> Analyzer<'a> {
                 self.analyze_expr(&mut while_stmt.condition)?;
                 if let Some(typ) = &while_stmt.condition.typ {
                     if let ast::TypeKind::Prim(ast::PrimType::Bool) = &typ.kind {
+                        for stmt in while_stmt.block.stmts.iter_mut() {
+                            self.analyze_stmt(stmt)?;
+                        }
                         return Ok(());
                     }
 
@@ -522,92 +469,9 @@ impl<'a> Analyzer<'a> {
     ) -> Result<bool, Error> {
         if let Some(expr_type) = &expr.typ {
             if expr.kind.is_lvalue() && !target_type.kind.is_copyable() && !allow_lvalue {
-                return Ok(false);
-            }
-
-            // Cases where we do implicit casting (e.g. upcasting sum-type variants)
-            if !self.type_eq(expr_type, target_type) {
-                if let ast::TypeKind::Box(box_type) = &target_type.kind {
-                    Ok(self.type_eq(expr_type, &*box_type.eltype))
-                } else if let ast::TypeKind::Iface(target_iface_type) = &target_type.kind {
-                    if let ast::TypeKind::Iface(_) = &expr_type.kind {
-                        return Ok(false);
-                    }
-
-                    let expr_type_name = expr_type.kind.type_name(); // TODO: deal with this panicking
-                    let type_info = self.typespace.get(&expr_type_name).unwrap();
-
-                    // Validate that the expression's type has all the methods which the interface defines
-                    let mut has_all_methods = true;
-                    if type_info.methods.len() >= target_iface_type.methods.len() {
-                        for method in &type_info.methods {
-                            if target_iface_type
-                                .methods
-                                .iter()
-                                .find(|(iface_method_name, iface_fun_type)| {
-                                    let mut has_same_parameters = true;
-                                    if iface_fun_type.parameters.len() == method.1.parameters.len()
-                                    {
-                                        for (i, param) in
-                                            iface_fun_type.parameters.iter().enumerate()
-                                        {
-                                            if !self.type_eq(param, &method.1.parameters[i]) {
-                                                has_same_parameters = false;
-                                            }
-                                        }
-                                    } else {
-                                        has_same_parameters = false;
-                                    }
-
-                                    let has_same_return_type = if let Some(iface_fun_type_returns) =
-                                        &iface_fun_type.returns
-                                    {
-                                        if let Some(method_returns) = &method.1.returns {
-                                            self.type_eq(&*iface_fun_type_returns, &*method_returns)
-                                        } else {
-                                            false
-                                        }
-                                    } else {
-                                        method.1.returns.is_none()
-                                    };
-
-                                    iface_method_name == method.0
-                                        && has_same_return_type
-                                        && has_same_parameters
-                                })
-                                .is_none()
-                            {
-                                has_all_methods = false;
-                            }
-                        }
-                    } else {
-                        has_all_methods = false;
-                    }
-
-                    Ok(has_all_methods)
-                } else if let ast::TypeKind::Sum(target_sum_type) = &target_type.kind {
-                    if let ast::TypeKind::Sum(_) = &expr_type.kind {
-                        return Ok(false);
-                    }
-
-                    Ok(target_sum_type
-                        .variants
-                        .iter()
-                        .any(|variant| self.type_eq(variant, expr_type)))
-                } else if let ast::TypeKind::Sum(expr_sum_type) = &expr_type.kind {
-                    if let ast::TypeKind::Sum(_) = &target_type.kind {
-                        return Ok(false);
-                    }
-
-                    Ok(expr_sum_type
-                        .variants
-                        .iter()
-                        .any(|variant| self.type_eq(variant, target_type)))
-                } else {
-                    Ok(false)
-                }
+                Ok(false)
             } else {
-                Ok(true)
+                Ok(self.type_eq(expr_type, target_type))
             }
         } else {
             Err(Error {
@@ -648,6 +512,15 @@ impl<'a> Analyzer<'a> {
                             return Err(Error {
                                 message: "unary not is only valid on boolean expressions".into(),
                                 span: expr.span.clone(),
+                            });
+                        }
+                        token::TokenKind::Tilde => {
+                            expr.typ = Some(ast::Type {
+                                kind: ast::BoxType {
+                                    eltype: Box::new(expr_type.clone()),
+                                }
+                                .into(),
+                                span: 0..0,
                             });
                         }
                         _ => {
@@ -905,22 +778,6 @@ impl<'a> Analyzer<'a> {
                                 span: as_expr.expr.span.clone(),
                             });
                         }
-                    } else if let ast::TypeKind::Sum(sum_type) = &expr_type.kind {
-                        let mut found_variant = None;
-                        for variant in &sum_type.variants {
-                            if self.type_eq(variant, &as_expr.typ) {
-                                found_variant = Some(variant.clone())
-                            }
-                        }
-
-                        if let Some(variant_type) = found_variant {
-                            expr.typ = Some(variant_type);
-                        } else {
-                            return Err(Error {
-                                message: "cast target is not a variant".into(),
-                                span: as_expr.typ.span.clone(),
-                            });
-                        }
                     } else {
                         return Err(Error {
                             message: "can only cast numeric primitives or sum type values".into(),
@@ -931,41 +788,6 @@ impl<'a> Analyzer<'a> {
                     return Err(Error {
                         message: "cannot cast void expression".into(),
                         span: as_expr.expr.span.clone(),
-                    });
-                }
-            }
-            ast::ExprKind::Is(is_expr) => {
-                self.analyze_expr(&mut is_expr.expr)?;
-                self.analyze_type(&mut is_expr.typ)?;
-
-                if let Some(expr_type) = &is_expr.expr.typ {
-                    if let ast::TypeKind::Sum(sum_type) = &expr_type.kind {
-                        if !sum_type
-                            .variants
-                            .iter()
-                            .any(|variant| self.type_eq(variant, &is_expr.typ))
-                        {
-                            return Err(Error {
-                                message: "checked type is not a variant of the expression type"
-                                    .into(),
-                                span: is_expr.expr.span.clone(),
-                            });
-                        }
-
-                        expr.typ = Some(ast::Type {
-                            kind: ast::TypeKind::Prim(ast::PrimType::Bool),
-                            span: 0..0,
-                        });
-                    } else {
-                        return Err(Error {
-                            message: "cannot check type of non-sum-type expression".into(),
-                            span: is_expr.expr.span.clone(),
-                        });
-                    }
-                } else {
-                    return Err(Error {
-                        message: "cannot compare type of void expression".into(),
-                        span: is_expr.expr.span.clone(),
                     });
                 }
             }
@@ -1015,6 +837,64 @@ impl<'a> Analyzer<'a> {
                     return Err(Error {
                         message: "struct literal must use struct type".into(),
                         span: struct_lit.typ.span.clone(),
+                    });
+                }
+            }
+            ast::ExprKind::ArrLit(arr_lit) => {
+                let mut eltype = None;
+
+                if arr_lit.elements.is_empty() {
+                    return Ok(()); // we give this a void type and handle the error later one
+                }
+
+                for expr in arr_lit.elements.iter_mut() {
+                    self.analyze_expr(expr)?;
+                    if expr.typ.is_none() {
+                        return Err(Error {
+                            message: "cannot use void expression as array literal element".into(),
+                            span: expr.span.clone(),
+                        });
+                    }
+                }
+
+                for expr in arr_lit.elements.iter_mut() {
+                    if let Some(eltype) = &eltype {
+                        if !self.is_assignable(expr, &eltype, false)? {
+                            return Err(Error {
+                                message: "cannot infer type of empty array literal".into(),
+                                span: expr.span.clone(),
+                            });
+                        }
+                    } else {
+                        eltype = Some(expr.typ.as_ref().unwrap().clone());
+                    }
+                }
+
+                expr.typ = Some(ast::Type {
+                    kind: ast::ArrType {
+                        eltype: Box::new(eltype.unwrap()),
+                    }
+                    .into(),
+                    span: 0..0,
+                });
+            }
+            ast::ExprKind::Idx(idx_expr) => {
+                self.analyze_expr(&mut idx_expr.target)?;
+                self.analyze_expr(&mut idx_expr.idx)?;
+
+                if let Some(target_type) = &idx_expr.target.typ {
+                    if let ast::TypeKind::Arr(arr_type) = &target_type.kind {
+                        expr.typ = Some((*arr_type.eltype).clone())
+                    } else {
+                        return Err(Error {
+                            message: "index target has non-array type".into(),
+                            span: idx_expr.target.span.clone(),
+                        });
+                    }
+                } else {
+                    return Err(Error {
+                        message: "cannot index void expression".into(),
+                        span: idx_expr.target.span.clone(),
                     });
                 }
             }
