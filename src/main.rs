@@ -6,6 +6,8 @@ use std::{
 use ariadne::{Label, Report, ReportKind, Source};
 use common::Error;
 use inkwell::{
+    context::Context,
+    module::Module,
     targets::{CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine},
     OptimizationLevel,
 };
@@ -29,10 +31,7 @@ fn report_error_and_exit(err: Error, src: &str, filename: &str) -> ! {
     exit(1);
 }
 
-fn llvm_module_from_filename<'ctx>(
-    filename: &str,
-    context: &'ctx inkwell::context::Context,
-) -> inkwell::module::Module<'ctx> {
+fn llvm_modules_from_filename<'ctx>(filename: &str, context: &'ctx Context) -> Vec<Module<'ctx>> {
     let mut file = match ast::File::new(filename.to_string()) {
         Ok(file) => file,
         Err(err) => {
@@ -51,11 +50,12 @@ fn llvm_module_from_filename<'ctx>(
         Err(err) => report_error_and_exit(err, &file.source, filename),
     };
 
-    if let Err(err) = analyzer::analyze_mut(&mut file) {
-        report_error_and_exit(err, &file.source, filename)
+    file.direct_deps = match analyzer::analyze_mut(&mut file) {
+        Ok(deps) => deps,
+        Err(err) => report_error_and_exit(err, &file.source, filename),
     };
 
-    codegen::gen(context, &file)
+    codegen::gen_modules(context, &file)
 }
 
 fn main() {
@@ -79,7 +79,7 @@ fn main() {
                         .unwrap_or_else(|_| "a.out".to_string());
 
                     let context = inkwell::context::Context::create();
-                    let llvm_module = llvm_module_from_filename(&c.args[0], &context);
+                    let llvm_modules = llvm_modules_from_filename(&c.args[0], &context);
 
                     Target::initialize_native(&InitializationConfig::default()).unwrap();
 
@@ -99,25 +99,39 @@ fn main() {
                         .unwrap();
 
                     let tmp_dir = env::temp_dir();
-                    let obj_path = {
-                        let mut file_path = tmp_dir;
-                        file_path.push("deft_tmp_obj.o");
-                        file_path
-                    };
+                    let mut obj_paths = Vec::new();
+                    for module in llvm_modules {
+                        let obj_path = {
+                            let mut file_path = tmp_dir.clone();
+                            file_path.push(&format!("{}.o", module.get_name().to_str().unwrap()));
+                            file_path
+                        };
 
-                    target_machine
-                        .write_to_file(&llvm_module, FileType::Object, obj_path.as_path())
-                        .unwrap();
+                        target_machine
+                            .write_to_file(&module, FileType::Object, obj_path.as_path())
+                            .unwrap();
 
-                    let mut linker_args = vec![obj_path.as_os_str().to_str().unwrap()];
-                    for artifact in linker_artifacts.split_ascii_whitespace() {
-                        linker_args.push(artifact);
+                        obj_paths.push(obj_path.as_os_str().to_str().unwrap().to_string());
                     }
-                    linker_args.push("-o");
-                    linker_args.push(&exe_path);
 
-                    let link_output = process::Command::new(linker)
-                        .args(&linker_args)
+                    let mut linker_args = Vec::new();
+
+                    for obj_path in obj_paths {
+                        linker_args.push(obj_path);
+                    }
+
+                    for artifact in linker_artifacts.split_ascii_whitespace() {
+                        linker_args.push(artifact.to_string());
+                    }
+
+                    linker_args.push("-o".to_string());
+                    linker_args.push(exe_path);
+
+                    let mut linker_command = process::Command::new(linker);
+                    linker_command.args(&linker_args);
+                    dbg!("linker command {}", &linker_command);
+
+                    let link_output = linker_command
                         .output()
                         .expect("failed to execute linker command");
 
@@ -150,8 +164,8 @@ fn main() {
                 .usage("deft emit-llvm <filename> [options...]")
                 .action(|c| {
                     let context = inkwell::context::Context::create();
-                    let llvm_module = llvm_module_from_filename(&c.args[0], &context);
-                    println!("{}", llvm_module.print_to_string().to_string())
+                    let llvm_modules = llvm_modules_from_filename(&c.args[0], &context);
+                    println!("{}", llvm_modules[0].print_to_string().to_string())
                 }),
         );
 

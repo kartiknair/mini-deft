@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fs, io,
     path::{Path, PathBuf},
 };
@@ -270,6 +271,7 @@ pub struct File {
     pub path: PathBuf,
     pub source: String,
     pub stmts: Vec<Stmt>,
+    pub direct_deps: HashMap<String, File>,
 }
 
 impl File {
@@ -281,45 +283,14 @@ impl File {
             path,
             source,
             stmts: Vec::new(),
+            direct_deps: HashMap::new(),
         })
     }
 
-    pub fn exports(&self) -> Vec<&Stmt> {
-        self.stmts
-            .iter()
-            .filter(|stmt| match &stmt.kind {
-                StmtKind::Fun(fun_decl) => fun_decl.exported,
-                StmtKind::Struct(struct_decl) => struct_decl.exported,
-                _ => false,
-            })
-            .collect()
-    }
-
-    pub fn imports(&self) -> Vec<&Stmt> {
-        self.stmts
-            .iter()
-            .filter(|stmt| matches!(&stmt.kind, StmtKind::Import(_)))
-            .collect()
-    }
-
-    #[allow(dead_code)]
-    pub fn exports_mut(&mut self) -> Vec<&mut Stmt> {
-        self.stmts
-            .iter_mut()
-            .filter(|stmt| match &stmt.kind {
-                StmtKind::Fun(fun_decl) => fun_decl.exported,
-                StmtKind::Struct(struct_decl) => struct_decl.exported,
-                _ => false,
-            })
-            .collect()
-    }
-
-    #[allow(dead_code)]
-    pub fn imports_mut(&mut self) -> Vec<&mut Stmt> {
-        self.stmts
-            .iter_mut()
-            .filter(|stmt| matches!(&stmt.kind, StmtKind::Import(_)))
-            .collect()
+    pub fn id(&self) -> String {
+        return self.path.components().fold(String::new(), |a, b| {
+            format!("{}_{}", a, b.as_os_str().to_str().unwrap())
+        });
     }
 
     pub fn lexeme(&self, span: &Span) -> &str {

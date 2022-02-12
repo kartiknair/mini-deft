@@ -2,12 +2,14 @@ use std::collections::HashMap;
 
 use either::Either;
 use inkwell::{
+    context::Context,
+    module::Module,
     types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum},
     values::{BasicValueEnum, FunctionValue},
     AddressSpace,
 };
 
-use crate::{ast, token};
+use crate::{analyzer, ast, token};
 
 #[derive(Debug)]
 struct Generator<'a, 'ctx> {
@@ -66,34 +68,63 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                     .into()
             }
             ast::TypeKind::Fun(_) => todo!(),
-            ast::TypeKind::Struct(struct_type) => self
-                .module
-                .get_struct_type(&struct_type.name)
-                .unwrap()
-                .into(),
+            ast::TypeKind::Struct(struct_type) => {
+                self
+                    .module
+                    .get_struct_type(&struct_type.name)
+                    .unwrap()
+                    .into()
+            }
             ast::TypeKind::Named(_) => panic!("internal-error: named type should be resolved before generation"),
         }
     }
 
-    fn declare_struct(&mut self, struct_decl: &ast::StructDecl) -> inkwell::types::StructType {
+    fn declare_struct(
+        &mut self,
+        struct_decl: &ast::StructDecl,
+        file: Option<&ast::File>,
+    ) -> inkwell::types::StructType {
+        let file = if let Some(file) = file {
+            file
+        } else {
+            &self.file
+        };
+
+        let struct_name = format!("{}.{}", file.id(), file.lexeme(&struct_decl.ident.span));
+
         self.module
-            .get_struct_type(self.file.lexeme(&struct_decl.ident.span))
-            .unwrap_or_else(|| {
-                self.context
-                    .opaque_struct_type(self.file.lexeme(&struct_decl.ident.span))
-            })
+            .get_struct_type(&struct_name)
+            .unwrap_or_else(|| self.context.opaque_struct_type(&struct_name))
     }
 
-    fn declare_fun(&mut self, func: &ast::FunDecl) -> FunctionValue<'ctx> {
+    fn declare_fun(
+        &mut self,
+        func: &ast::FunDecl,
+        file: Option<&ast::File>,
+    ) -> FunctionValue<'ctx> {
+        let file = if let Some(file) = file {
+            file
+        } else {
+            &self.file
+        };
+
         let fun_name = if let Some(target_type) = &func.target_type {
             format!(
                 "{}.{}",
                 target_type.kind.type_name(),
-                self.file.lexeme(&func.ident.span)
+                file.lexeme(&func.ident.span)
             )
         } else {
-            self.file.lexeme(&func.ident.span).to_string()
+            file.lexeme(&func.ident.span).to_string()
         };
+
+        let fun_name = if func.external || fun_name == "main" {
+            fun_name
+        } else {
+            format!("{}.{}", file.id(), fun_name)
+        };
+
+        dbg!(&fun_name);
 
         self.module.get_function(&fun_name).unwrap_or_else(|| {
             let mut tmp_params = func
@@ -129,9 +160,19 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
         })
     }
 
-    fn gen_struct(&mut self, struct_decl: &ast::StructDecl) {
+    fn gen_struct(&mut self, struct_decl: &ast::StructDecl, file: Option<&ast::File>) {
+        let file = if let Some(file) = file {
+            file
+        } else {
+            &self.file
+        };
+
         self.module
-            .get_struct_type(self.file.lexeme(&struct_decl.ident.span))
+            .get_struct_type(&format!(
+                "{}.{}",
+                file.id(),
+                file.lexeme(&struct_decl.ident.span)
+            ))
             .expect("internal-error: did not predeclare struct type")
             .set_body(
                 &struct_decl
@@ -147,7 +188,7 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
     fn gen_fun(&mut self, func: &ast::FunDecl) -> FunctionValue<'ctx> {
         self.namespace.clear();
 
-        let func_decl = self.declare_fun(func);
+        let func_decl = self.declare_fun(func, None);
 
         self.current_function = Some(func_decl);
 
@@ -732,30 +773,80 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
             }
             ast::ExprKind::Call(call_expr) => {
                 if let ast::ExprKind::Var(var_expr) = &call_expr.callee.kind {
-                    if let Some(func) = self
+                    let func = if let Some(func) = self.module.get_function(&format!(
+                        "{}.{}",
+                        self.file.id(),
+                        self.file.lexeme(&var_expr.ident.span)
+                    )) {
+                        func
+                    } else if let Some(func) = self
                         .module
                         .get_function(self.file.lexeme(&var_expr.ident.span))
                     {
-                        let genned_args = call_expr
-                            .args
-                            .iter()
-                            .map(|expr| self.gen_expr_as_ptr(expr).into())
-                            .collect::<Vec<_>>();
-
-                        if let Either::Left(value) = self
-                            .builder
-                            .build_call(func, &genned_args, "")
-                            .try_as_basic_value()
-                        {
-                            value
-                        } else {
-                            self.context.i32_type().get_undef().into()
-                        }
+                        func
                     } else {
                         panic!("internal-error: uncaught undefined function")
+                    };
+
+                    let genned_args = call_expr
+                        .args
+                        .iter()
+                        .map(|expr| self.gen_expr_as_ptr(expr).into())
+                        .collect::<Vec<_>>();
+
+                    if let Either::Left(value) = self
+                        .builder
+                        .build_call(func, &genned_args, "")
+                        .try_as_basic_value()
+                    {
+                        value
+                    } else {
+                        self.context.i32_type().get_undef().into()
                     }
                 } else if let ast::ExprKind::Binary(binary_expr) = &call_expr.callee.kind {
-                    if binary_expr.op.kind == token::TokenKind::Dot {
+                    if let ast::ExprKind::Var(left_var_expr) = &binary_expr.left.kind {
+                        if binary_expr.op.kind == token::TokenKind::Dot {
+                            if self
+                                .file
+                                .direct_deps
+                                .get(self.file.lexeme(&left_var_expr.ident.span))
+                                .is_some()
+                            {
+                                // Left of '.' is a module type ident
+                                if let ast::ExprKind::Var(right_var_expr) = &binary_expr.right.kind
+                                {
+                                    let func = self
+                                        .module
+                                        .get_function(&format!(
+                                            "{}.{}",
+                                            self.file
+                                                .direct_deps
+                                                .get(self.file.lexeme(&left_var_expr.ident.span))
+                                                .unwrap()
+                                                .id(),
+                                            self.file.lexeme(&right_var_expr.ident.span)
+                                        ))
+                                        .unwrap();
+
+                                    let genned_args = call_expr
+                                        .args
+                                        .iter()
+                                        .map(|expr| self.gen_expr_as_ptr(expr).into())
+                                        .collect::<Vec<_>>();
+
+                                    return if let Either::Left(value) = self
+                                        .builder
+                                        .build_call(func, &genned_args, "")
+                                        .try_as_basic_value()
+                                    {
+                                        value
+                                    } else {
+                                        self.context.i32_type().get_undef().into()
+                                    };
+                                }
+                            }
+                        }
+
                         if let ast::ExprKind::Var(var_expr) = &binary_expr.right.kind {
                             // Transform `target.method(42)` to `target.method(target, 42)`
                             let target_ptr = self.gen_expr_as_ptr(&*binary_expr.left);
@@ -808,11 +899,20 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                 }
 
                 let struct_alloca = self.builder.build_alloca(struct_type, "");
+                dbg!(&struct_alloca);
                 for (i, init) in genned_inits.iter().enumerate() {
+                    dbg!(i);
                     self.builder.build_store(
-                        self.builder
-                            .build_struct_gep(struct_alloca, i as u32, "")
-                            .unwrap(),
+                        unsafe {
+                            self.builder.build_gep(
+                                struct_alloca,
+                                &vec![
+                                    self.context.i32_type().const_zero(),
+                                    self.context.i32_type().const_int(i as u64, false),
+                                ],
+                                "",
+                            )
+                        },
                         *init,
                     );
                 }
@@ -1102,12 +1202,26 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
     }
 }
 
-pub fn gen<'ctx>(
-    context: &'ctx inkwell::context::Context,
+pub fn gen_modules<'ctx>(context: &'ctx Context, file: &ast::File) -> Vec<Module<'ctx>> {
+    let mut modules = Vec::new();
+
+    modules.push(gen_module(context, ".main", file));
+    for (dep_name, dep_file) in &analyzer::get_deps(&file).unwrap() {
+        let module = gen_module(context, dep_name, dep_file);
+        dbg!("{}", module.print_to_string().to_string());
+        modules.push(module);
+    }
+
+    modules
+}
+
+pub fn gen_module<'ctx>(
+    context: &'ctx Context,
+    module_name: &str,
     file: &ast::File,
-) -> inkwell::module::Module<'ctx> {
+) -> Module<'ctx> {
     let namespace = HashMap::<String, inkwell::values::PointerValue>::new();
-    let module = context.create_module("my_module");
+    let module = context.create_module(module_name);
     let builder = context.create_builder();
 
     let mut generator = Generator {
@@ -1123,16 +1237,43 @@ pub fn gen<'ctx>(
         namespace,
     };
 
+    for (_, imported_file) in &generator.file.direct_deps {
+        for stmt in &imported_file.stmts {
+            match &stmt.kind {
+                ast::StmtKind::Fun(fun_decl) => {
+                    if fun_decl.exported {
+                        generator.declare_fun(fun_decl, Some(imported_file));
+                    }
+                }
+                ast::StmtKind::Struct(struct_decl) => {
+                    if struct_decl.exported {
+                        generator.declare_struct(struct_decl, Some(imported_file));
+                    }
+                }
+                _ => {}
+            }
+        }
+        for stmt in &imported_file.stmts {
+            if let ast::StmtKind::Struct(struct_decl) = &stmt.kind {
+                if struct_decl.exported {
+                    generator.gen_struct(struct_decl, Some(imported_file));
+                }
+            }
+        }
+    }
+
     // Forward declare all our declarations
     for stmt in &file.stmts {
         match &stmt.kind {
             ast::StmtKind::Fun(fun_decl) => {
-                generator.declare_fun(fun_decl);
+                generator.declare_fun(fun_decl, None);
             }
             ast::StmtKind::Struct(struct_decl) => {
-                generator.declare_struct(struct_decl);
+                generator.declare_struct(struct_decl, None);
             }
-            ast::StmtKind::Import(_) => todo!(),
+            ast::StmtKind::Import(_) => {
+                // do nothing
+            }
             _ => unreachable!(),
         }
     }
@@ -1143,9 +1284,9 @@ pub fn gen<'ctx>(
                 generator.gen_fun(fun_decl);
             }
             ast::StmtKind::Struct(struct_decl) => {
-                generator.gen_struct(struct_decl);
+                generator.gen_struct(struct_decl, None);
             }
-            ast::StmtKind::Import(_) => todo!(),
+            ast::StmtKind::Import(_) => {}
             _ => unreachable!(),
         }
     }

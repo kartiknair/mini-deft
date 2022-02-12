@@ -1,3 +1,4 @@
 export fun sum(x f64, y f64) f64 {
     var z = x + y
+    return z
 }

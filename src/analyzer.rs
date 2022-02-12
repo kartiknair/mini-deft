@@ -32,50 +32,50 @@ impl<'a> Analyzer<'a> {
         let mut typespace = HashMap::new();
 
         typespace.insert(
-            "i8".into(),
+            format!("{}.{}", file.id(), "i8"),
             ast::TypeKind::Prim(ast::PrimType::Int(8)).into(),
         );
         typespace.insert(
-            "i16".into(),
+            format!("{}.{}", file.id(), "i16"),
             ast::TypeKind::Prim(ast::PrimType::Int(16)).into(),
         );
         typespace.insert(
-            "i32".into(),
+            format!("{}.{}", file.id(), "i32"),
             ast::TypeKind::Prim(ast::PrimType::Int(32)).into(),
         );
         typespace.insert(
-            "i64".into(),
+            format!("{}.{}", file.id(), "i64"),
             ast::TypeKind::Prim(ast::PrimType::Int(64)).into(),
         );
 
         typespace.insert(
-            "u8".into(),
+            format!("{}.{}", file.id(), "u8"),
             ast::TypeKind::Prim(ast::PrimType::UInt(8)).into(),
         );
         typespace.insert(
-            "u16".into(),
+            format!("{}.{}", file.id(), "u16"),
             ast::TypeKind::Prim(ast::PrimType::UInt(16)).into(),
         );
         typespace.insert(
-            "u32".into(),
+            format!("{}.{}", file.id(), "u32"),
             ast::TypeKind::Prim(ast::PrimType::UInt(32)).into(),
         );
         typespace.insert(
-            "u64".into(),
+            format!("{}.{}", file.id(), "u64"),
             ast::TypeKind::Prim(ast::PrimType::UInt(64)).into(),
         );
 
         typespace.insert(
-            "f32".into(),
+            format!("{}.{}", file.id(), "f32"),
             ast::TypeKind::Prim(ast::PrimType::Float(32)).into(),
         );
         typespace.insert(
-            "f64".into(),
+            format!("{}.{}", file.id(), "f64"),
             ast::TypeKind::Prim(ast::PrimType::Float(64)).into(),
         );
 
         typespace.insert(
-            "bool".into(),
+            format!("{}.{}", file.id(), "bool"),
             ast::TypeKind::Prim(ast::PrimType::Bool).into(),
         );
 
@@ -128,20 +128,21 @@ impl<'a> Analyzer<'a> {
             ast::TypeKind::Named(named_type) => {
                 let lexeme = self.file.lexeme(&named_type.name.span);
 
-                if let Some(module_ident) = &named_type.source {
-                    if let Some(resolved_type_info) = self.typespace.get(&format!(
-                        "{}.{}",
-                        self.file.lexeme(&module_ident.span),
-                        lexeme,
-                    )) {
-                        typ.kind = resolved_type_info.kind.clone();
+                let type_name = format!(
+                    "{}.{}",
+                    if let Some(module_ident) = &named_type.source {
+                        self.file
+                            .direct_deps
+                            .get(self.file.lexeme(&module_ident.span))
+                            .unwrap()
+                            .id()
                     } else {
-                        return Err(Error {
-                            message: "unknown imported type".into(),
-                            span: named_type.name.span.clone(),
-                        });
-                    }
-                } else if let Some(resolved_type_info) = self.typespace.get(lexeme) {
+                        self.file.id()
+                    },
+                    lexeme,
+                );
+
+                if let Some(resolved_type_info) = self.typespace.get(&type_name) {
                     typ.kind = resolved_type_info.kind.clone();
                 } else {
                     return Err(Error {
@@ -279,7 +280,11 @@ impl<'a> Analyzer<'a> {
                     self.analyze_type(&mut member.1)?;
                 }
 
-                let struct_name = self.file.lexeme(&struct_decl.ident.span).to_string();
+                let struct_name = format!(
+                    "{}.{}",
+                    self.file.id(),
+                    self.file.lexeme(&struct_decl.ident.span)
+                );
                 let struct_type = ast::StructType {
                     name: struct_name.clone(),
                     members: struct_decl
@@ -333,7 +338,8 @@ impl<'a> Analyzer<'a> {
                     {
                         return Err(var_stmt.ident.error_at("redefinition of variable"));
                     } else if self
-                        .imports
+                        .file
+                        .direct_deps
                         .get(self.file.lexeme(&var_stmt.ident.span))
                         .is_some()
                     {
@@ -541,7 +547,8 @@ impl<'a> Analyzer<'a> {
                 if let token::TokenKind::Dot = &binary_expr.op.kind {
                     if let ast::ExprKind::Var(left_var_expr) = &binary_expr.left.kind {
                         if self
-                            .imports
+                            .file
+                            .direct_deps
                             .get(self.file.lexeme(&left_var_expr.ident.span))
                             .is_some()
                         {
@@ -928,22 +935,28 @@ impl<'a> Analyzer<'a> {
         Ok(())
     }
 
-    fn analyze(&mut self) -> Result<(), Error> {
+    fn analyze(&mut self) -> Result<HashMap<String, ast::File>, Error> {
         // Validate that there is only one import of a file
-        for import in self.file.imports() {
-            if let ast::StmtKind::Import(import_decl) = &import.kind {
+
+        for stmt in &self.file.stmts {
+            if let ast::StmtKind::Import(import_decl) = &stmt.kind {
                 let import_name = if let Some(alias) = &import_decl.alias {
-                    self.file.lexeme(&alias.span)
+                    self.file.lexeme(&alias.span).to_string()
                 } else {
                     let import_path = Path::new(self.file.lexeme(
                         &((import_decl.path.span.start + 1)..(import_decl.path.span.end - 1)),
                     ));
-                    import_path.file_stem().unwrap().to_str().unwrap()
+                    import_path
+                        .file_stem()
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .to_string()
                 };
 
-                if self.imports.get(import_name).is_some() {
+                if self.file.direct_deps.get(&import_name).is_some() {
                     return Err(Error {
-                        span: import.pointer.clone(),
+                        span: stmt.pointer.clone(),
                         message: "re-importing previously imported module".into(),
                     });
                 }
@@ -975,7 +988,7 @@ impl<'a> Analyzer<'a> {
                     Ok(tokens) => tokens,
                     Err(err) => {
                         return Err(Error {
-                            span: import.pointer.clone(),
+                            span: stmt.pointer.clone(),
                             message: format!("lex error in imported module. {}", err.message),
                         })
                     }
@@ -985,71 +998,85 @@ impl<'a> Analyzer<'a> {
                     Ok(stmts) => stmts,
                     Err(err) => {
                         return Err(Error {
-                            span: import.pointer.clone(),
+                            span: stmt.pointer.clone(),
                             message: format!("parse error in imported module. {}", err.message),
                         })
                     }
                 };
 
-                analyze_mut(&mut imported_file)?;
+                imported_file.direct_deps = match analyze_mut(&mut imported_file) {
+                    Ok(imports) => imports,
+                    Err(err) => {
+                        return Err(Error {
+                            span: stmt.pointer.clone(),
+                            message: format!("analysis error in imported module. {}", err.message),
+                        })
+                    }
+                };
 
-                for export in imported_file.exports() {
-                    match &export.kind {
-                        ast::StmtKind::Struct(struct_decl) => {
-                            let struct_name = format!(
-                                "{}.{}",
-                                import_name,
-                                imported_file.lexeme(&struct_decl.ident.span).to_string()
-                            );
-
-                            let struct_type = ast::StructType {
-                                name: struct_name.clone(),
-                                members: struct_decl
-                                    .members
-                                    .iter()
-                                    .map(|(ident, typ)| {
-                                        (self.file.lexeme(&ident.span).into(), typ.clone())
-                                    })
-                                    .collect(),
-                            };
-
-                            self.typespace.insert(
-                                struct_name,
-                                TypeInfo {
-                                    kind: ast::TypeKind::Struct(struct_type),
-                                    methods: HashMap::new(),
-                                },
-                            );
-                        }
+                for stmt in &imported_file.stmts {
+                    match &stmt.kind {
                         ast::StmtKind::Fun(fun_decl) => {
-                            self.namespace.insert(
-                                format!(
-                                    "{}.{}",
-                                    import_name,
-                                    imported_file.lexeme(&fun_decl.ident.span)
-                                ),
-                                ast::Type {
-                                    span: 0..0,
-                                    kind: ast::FunType {
-                                        parameters: fun_decl
-                                            .parameters
-                                            .iter()
-                                            .map(|(_, typ)| typ.clone())
-                                            .collect(),
-                                        returns: fun_decl
-                                            .return_type
-                                            .as_ref()
-                                            .map(|return_type| Box::new(return_type.clone())),
-                                    }
-                                    .into(),
-                                },
-                            );
+                            if fun_decl.exported {
+                                self.namespace.insert(
+                                    format!(
+                                        "{}.{}",
+                                        import_name,
+                                        imported_file.lexeme(&fun_decl.ident.span)
+                                    ),
+                                    ast::Type {
+                                        span: 0..0,
+                                        kind: ast::FunType {
+                                            parameters: fun_decl
+                                                .parameters
+                                                .iter()
+                                                .map(|(_, typ)| typ.clone())
+                                                .collect(),
+                                            returns: fun_decl
+                                                .return_type
+                                                .as_ref()
+                                                .map(|return_type| Box::new(return_type.clone())),
+                                        }
+                                        .into(),
+                                    },
+                                );
+                            }
                         }
-                        _ => unreachable!(),
+                        ast::StmtKind::Struct(struct_decl) => {
+                            if struct_decl.exported {
+                                let struct_name = format!(
+                                    "{}.{}",
+                                    imported_file.id(),
+                                    imported_file.lexeme(&struct_decl.ident.span).to_string()
+                                );
+
+                                let struct_type = ast::StructType {
+                                    name: struct_name.clone(),
+                                    members: struct_decl
+                                        .members
+                                        .iter()
+                                        .map(|(ident, typ)| {
+                                            (imported_file.lexeme(&ident.span).into(), typ.clone())
+                                        })
+                                        .collect(),
+                                };
+
+                                self.typespace.insert(
+                                    struct_name,
+                                    TypeInfo {
+                                        kind: ast::TypeKind::Struct(struct_type),
+                                        methods: HashMap::new(),
+                                    },
+                                );
+                            }
+                        }
+                        _ => {}
                     }
                 }
 
-                self.imports.insert(import_name.to_string(), imported_file);
+                self.file
+                    .direct_deps
+                    .insert(import_name.to_string(), imported_file);
                 // TODO: Validate that there are no import cycles (e.g. a->b->a where `->` implying dependancy)
             }
         }
@@ -1060,19 +1087,66 @@ impl<'a> Analyzer<'a> {
         }
 
         self.file.stmts = new_stmts;
-        Ok(())
+        Ok(self.file.direct_deps.clone())
     }
 }
 
 #[allow(dead_code)]
-pub fn analyze(file: &ast::File) -> Result<ast::File, Error> {
+pub fn analyze(file: &ast::File) -> Result<(ast::File, HashMap<String, ast::File>), Error> {
     let mut new_file = file.clone();
     let mut analyzer = Analyzer::new(&mut new_file);
-    analyzer.analyze()?;
-    Ok(new_file)
+    let deps = analyzer.analyze()?;
+    Ok((new_file, deps))
 }
 
-pub fn analyze_mut(file: &mut ast::File) -> Result<(), Error> {
+pub fn analyze_mut(file: &mut ast::File) -> Result<HashMap<String, ast::File>, Error> {
     let mut analyzer = Analyzer::new(file);
-    analyzer.analyze()
+    let deps = analyzer.analyze()?;
+    Ok(deps)
+}
+
+fn recursively_add_deps(
+    deps: &mut HashMap<String, ast::File>,
+    file: &ast::File,
+) -> Result<(), Error> {
+    deps.insert(
+        file.path.iter().fold(String::new(), |a, b| {
+            format!("{}_{}", a, b.to_str().unwrap())
+        }),
+        file.clone(),
+    );
+
+    for stmt in &file.stmts {
+        if let ast::StmtKind::Import(import_decl) = &stmt.kind {
+            let import_path = {
+                let mut dir_path = file.path.clone();
+                dir_path.pop();
+                dir_path.push(
+                    &file.lexeme(&import_decl.path.span)
+                        [1..file.lexeme(&import_decl.path.span).len() - 1],
+                );
+                dir_path
+            };
+
+            dbg!(&file.path);
+            dbg!(&import_path);
+            let mut imported_file = ast::File::new(import_path).unwrap();
+            let tokens = lexer::lex(&imported_file.source).unwrap();
+            imported_file.stmts = parser::parse(&tokens).unwrap();
+            analyze_mut(&mut imported_file)?;
+
+            recursively_add_deps(deps, &imported_file)?;
+        }
+    }
+
+    Ok(())
+}
+
+pub fn get_deps<'ctx>(file: &ast::File) -> Result<HashMap<String, ast::File>, Error> {
+    let mut deps = HashMap::new();
+    recursively_add_deps(&mut deps, file)?;
+    deps.remove(&file.path.iter().fold(String::new(), |a, b| {
+        format!("{}_{}", a, b.to_str().unwrap())
+    }));
+    Ok(deps)
 }
