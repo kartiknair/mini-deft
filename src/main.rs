@@ -22,6 +22,17 @@ mod parser;
 mod token;
 
 fn report_error_and_exit(err: Error, src: &str, filename: &str) -> ! {
+    let filename: &str = &if let Some(file) = &err.file {
+        file.path.to_str().unwrap().to_string()
+    } else {
+        filename.to_string()
+    };
+    let src: &str = &if let Some(file) = &err.file {
+        file.source.to_string()
+    } else {
+        src.to_string()
+    };
+
     Report::build(ReportKind::Error, filename, err.span.start)
         .with_label(Label::new((filename, err.span)).with_message(err.message))
         .finish()

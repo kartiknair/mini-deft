@@ -2,3 +2,8 @@ export struct Point {
     x f64
     y f64
 }
+
+export struct Line {
+    beg Point
+    end Point
+}

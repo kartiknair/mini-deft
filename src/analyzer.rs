@@ -6,13 +6,23 @@ use crate::{ast, common::Error, lexer, parser, token};
 struct TypeInfo {
     kind: ast::TypeKind,
     methods: HashMap<String, ast::FunType>,
+    public: bool,
 }
 
-impl From<ast::TypeKind> for TypeInfo {
-    fn from(type_kind: ast::TypeKind) -> TypeInfo {
-        TypeInfo {
+impl TypeInfo {
+    fn new(type_kind: ast::TypeKind) -> Self {
+        Self {
             kind: type_kind,
             methods: HashMap::new(),
+            public: false,
+        }
+    }
+
+    fn new_public(type_kind: ast::TypeKind) -> Self {
+        Self {
+            kind: type_kind,
+            methods: HashMap::new(),
+            public: true,
         }
     }
 }
@@ -33,50 +43,50 @@ impl<'a> Analyzer<'a> {
 
         typespace.insert(
             format!("{}.{}", file.id(), "i8"),
-            ast::TypeKind::Prim(ast::PrimType::Int(8)).into(),
+            TypeInfo::new_public(ast::TypeKind::Prim(ast::PrimType::Int(8))),
         );
         typespace.insert(
             format!("{}.{}", file.id(), "i16"),
-            ast::TypeKind::Prim(ast::PrimType::Int(16)).into(),
+            TypeInfo::new_public(ast::TypeKind::Prim(ast::PrimType::Int(16))),
         );
         typespace.insert(
             format!("{}.{}", file.id(), "i32"),
-            ast::TypeKind::Prim(ast::PrimType::Int(32)).into(),
+            TypeInfo::new_public(ast::TypeKind::Prim(ast::PrimType::Int(32))),
         );
         typespace.insert(
             format!("{}.{}", file.id(), "i64"),
-            ast::TypeKind::Prim(ast::PrimType::Int(64)).into(),
+            TypeInfo::new_public(ast::TypeKind::Prim(ast::PrimType::Int(64))),
         );
 
         typespace.insert(
             format!("{}.{}", file.id(), "u8"),
-            ast::TypeKind::Prim(ast::PrimType::UInt(8)).into(),
+            TypeInfo::new_public(ast::TypeKind::Prim(ast::PrimType::UInt(8))),
         );
         typespace.insert(
             format!("{}.{}", file.id(), "u16"),
-            ast::TypeKind::Prim(ast::PrimType::UInt(16)).into(),
+            TypeInfo::new_public(ast::TypeKind::Prim(ast::PrimType::UInt(16))),
         );
         typespace.insert(
             format!("{}.{}", file.id(), "u32"),
-            ast::TypeKind::Prim(ast::PrimType::UInt(32)).into(),
+            TypeInfo::new_public(ast::TypeKind::Prim(ast::PrimType::UInt(32))),
         );
         typespace.insert(
             format!("{}.{}", file.id(), "u64"),
-            ast::TypeKind::Prim(ast::PrimType::UInt(64)).into(),
+            TypeInfo::new_public(ast::TypeKind::Prim(ast::PrimType::UInt(64))),
         );
 
         typespace.insert(
             format!("{}.{}", file.id(), "f32"),
-            ast::TypeKind::Prim(ast::PrimType::Float(32)).into(),
+            TypeInfo::new_public(ast::TypeKind::Prim(ast::PrimType::Float(32))),
         );
         typespace.insert(
             format!("{}.{}", file.id(), "f64"),
-            ast::TypeKind::Prim(ast::PrimType::Float(64)).into(),
+            TypeInfo::new_public(ast::TypeKind::Prim(ast::PrimType::Float(64))),
         );
 
         typespace.insert(
             format!("{}.{}", file.id(), "bool"),
-            ast::TypeKind::Prim(ast::PrimType::Bool).into(),
+            TypeInfo::new_public(ast::TypeKind::Prim(ast::PrimType::Bool)),
         );
 
         Self {
@@ -125,29 +135,19 @@ impl<'a> Analyzer<'a> {
             ast::TypeKind::Box(box_type) => {
                 self.analyze_type(&mut box_type.eltype)?;
             }
+            ast::TypeKind::Arr(arr_type) => {
+                self.analyze_type(&mut arr_type.eltype)?;
+            }
             ast::TypeKind::Named(named_type) => {
-                let lexeme = self.file.lexeme(&named_type.name.span);
-
-                let type_name = format!(
-                    "{}.{}",
-                    if let Some(module_ident) = &named_type.source {
-                        self.file
-                            .direct_deps
-                            .get(self.file.lexeme(&module_ident.span))
-                            .unwrap()
-                            .id()
-                    } else {
-                        self.file.id()
-                    },
-                    lexeme,
-                );
-
-                if let Some(resolved_type_info) = self.typespace.get(&type_name) {
+                if let Some(resolved_type_info) =
+                    self.typespace.get(&self.name_from_named_type(named_type))
+                {
                     typ.kind = resolved_type_info.kind.clone();
                 } else {
                     return Err(Error {
                         message: "unknown named type".into(),
                         span: named_type.name.span.clone(),
+                        file: None,
                     });
                 }
             }
@@ -155,6 +155,24 @@ impl<'a> Analyzer<'a> {
         }
 
         Ok(())
+    }
+
+    fn name_from_named_type(&self, named_type: &ast::NamedType) -> String {
+        let lexeme = self.file.lexeme(&named_type.name.span);
+
+        format!(
+            "{}.{}",
+            if let Some(module_ident) = &named_type.source {
+                self.file
+                    .direct_deps
+                    .get(self.file.lexeme(&module_ident.span))
+                    .unwrap()
+                    .id()
+            } else {
+                self.file.id()
+            },
+            lexeme,
+        )
     }
 
     fn analyze_stmt(&mut self, stmt: &mut ast::Stmt) -> Result<(), Error> {
@@ -178,6 +196,18 @@ impl<'a> Analyzer<'a> {
 
                 let mut shadowed = HashMap::new();
                 for param in fun_decl.parameters.iter_mut() {
+                    if let ast::TypeKind::Named(named_type) = &param.1.kind {
+                        if let Some(typ_info) =
+                            self.typespace.get(&self.name_from_named_type(named_type))
+                        {
+                            if !typ_info.public && fun_decl.exported {
+                                return Err(param
+                                    .0
+                                    .error_at("cannot use private type in exported function"));
+                            }
+                        } // let the else error be handled by the analyze_type() below instead
+                    }
+
                     self.analyze_type(&mut param.1)?;
 
                     if self.file.lexeme(&param.0.span) == function_name {
@@ -198,13 +228,14 @@ impl<'a> Analyzer<'a> {
 
                 if let Some(target_type) = &mut fun_decl.target_type {
                     if let ast::TypeKind::Named(named_type) = &target_type.kind {
-                        let type_name = self.file.lexeme(&named_type.name.span);
-                        let resolved_type_info = match self.typespace.get_mut(type_name) {
+                        let type_name = self.name_from_named_type(named_type);
+                        let resolved_type_info = match self.typespace.get_mut(&type_name) {
                             Some(typ_info) => typ_info,
                             None => {
                                 return Err(Error {
                                     span: target_type.span.clone(),
                                     message: format!("undefined type: '{}'", type_name),
+                                    file: None,
                                 });
                             }
                         };
@@ -227,6 +258,7 @@ impl<'a> Analyzer<'a> {
                         return Err(Error{
                             span: target_type.span.clone(),
                             message: "methods can only be defined on named types. consider introducing a new type".to_string(),
+                            file: None,
                         });
                     }
 
@@ -277,6 +309,18 @@ impl<'a> Analyzer<'a> {
             ast::StmtKind::Struct(struct_decl) => {
                 // Validate the struct declaration and add it to the namespace
                 for member in struct_decl.members.iter_mut() {
+                    if let ast::TypeKind::Named(named_type) = &member.1.kind {
+                        if let Some(typ_info) =
+                            self.typespace.get(&self.name_from_named_type(named_type))
+                        {
+                            if !typ_info.public && struct_decl.exported {
+                                return Err(member
+                                    .0
+                                    .error_at("cannot use private type in exported struct type"));
+                            }
+                        } // let the else error be handled by the analyze_type() below instead
+                    }
+
                     self.analyze_type(&mut member.1)?;
                 }
 
@@ -285,6 +329,7 @@ impl<'a> Analyzer<'a> {
                     self.file.id(),
                     self.file.lexeme(&struct_decl.ident.span)
                 );
+
                 let struct_type = ast::StructType {
                     name: struct_name.clone(),
                     members: struct_decl
@@ -299,6 +344,7 @@ impl<'a> Analyzer<'a> {
                     TypeInfo {
                         kind: ast::TypeKind::Struct(struct_type),
                         methods: HashMap::new(),
+                        public: struct_decl.exported,
                     },
                 );
             }
@@ -313,6 +359,7 @@ impl<'a> Analyzer<'a> {
                             message: "variable initializer is not assignable to provided type"
                                 .into(),
                             span: var_stmt.init.span.clone(),
+                            file: None,
                         });
                     }
                 } else {
@@ -325,6 +372,7 @@ impl<'a> Analyzer<'a> {
                             message: "variable initializer is not copyable. use an explicit copy operation"
                                 .into(),
                             span: var_stmt.init.span.clone(),
+                            file: None,
                         });
                     }
                     var_stmt.typ = var_stmt.init.typ.clone();
@@ -378,6 +426,7 @@ impl<'a> Analyzer<'a> {
                                     span: if_stmt.condition.span.clone(),
                                     message: "void expression cannot be used as else if condition"
                                         .into(),
+                                    file: None,
                                 });
                             }
                         }
@@ -391,12 +440,14 @@ impl<'a> Analyzer<'a> {
                         return Err(Error {
                             span: if_stmt.condition.span.clone(),
                             message: "if statement condition must be a boolean".into(),
+                            file: None,
                         });
                     }
                 } else {
                     return Err(Error {
                         span: if_stmt.condition.span.clone(),
                         message: "void expression cannot be used as if statement condition".into(),
+                        file: None,
                     });
                 }
             }
@@ -413,11 +464,13 @@ impl<'a> Analyzer<'a> {
                     return Err(Error {
                         message: "while condition must be of boolean type".into(),
                         span: while_stmt.condition.span.clone(),
+                        file: None,
                     });
                 } else {
                     return Err(Error {
                         message: "cannot use void expression as while condition".into(),
                         span: while_stmt.condition.span.clone(),
+                        file: None,
                     });
                 }
             }
@@ -433,24 +486,28 @@ impl<'a> Analyzer<'a> {
                                 return Err(Error {
                                     message: "return value is not assignable to return type".into(),
                                     span: value.span.clone(),
+                                    file: None,
                                 });
                             }
                         } else {
                             return Err(Error {
                                 message: "returning value in void function".into(),
                                 span: value.span.clone(),
+                                file: None,
                             });
                         }
                     } else if current_func.return_type.is_some() {
                         return Err(Error {
                             message: "void return in function with return type".into(),
                             span: stmt.pointer.clone(),
+                            file: None,
                         });
                     }
                 } else {
                     return Err(Error {
                         message: "return statement must be inside function".into(),
                         span: stmt.pointer.clone(),
+                        file: None,
                     });
                 }
             }
@@ -483,6 +540,7 @@ impl<'a> Analyzer<'a> {
             Err(Error {
                 span: expr.span.clone(),
                 message: "unexpected void expression".into(),
+                file: None,
             })
         }
     }
@@ -504,6 +562,7 @@ impl<'a> Analyzer<'a> {
                             return Err(Error {
                                 message: "unary negate is only valid on numeric expressions".into(),
                                 span: expr.span.clone(),
+                                file: None,
                             });
                         }
                         token::TokenKind::Bang => {
@@ -518,6 +577,7 @@ impl<'a> Analyzer<'a> {
                             return Err(Error {
                                 message: "unary not is only valid on boolean expressions".into(),
                                 span: expr.span.clone(),
+                                file: None,
                             });
                         }
                         token::TokenKind::Tilde => {
@@ -540,6 +600,7 @@ impl<'a> Analyzer<'a> {
                     return Err(Error {
                         message: "unary expression cannot be done on void expression".into(),
                         span: expr.span.clone(),
+                        file: None,
                     });
                 }
             }
@@ -569,6 +630,7 @@ impl<'a> Analyzer<'a> {
                                                     self.file.lexeme(&right_var_expr.ident.span)
                                                 ),
                                                 span: binary_expr.right.span.clone(),
+                                                file: None,
                                             });
                                         }
                                     },
@@ -581,6 +643,7 @@ impl<'a> Analyzer<'a> {
                                         "operator '.' can only have an identifier on it's right"
                                             .to_string(),
                                     span: binary_expr.right.span.clone(),
+                                    file: None,
                                 });
                             }
                         }
@@ -618,6 +681,7 @@ impl<'a> Analyzer<'a> {
                                             member_name, struct_type.name
                                         ),
                                         span: binary_expr.left.span.clone(),
+                                        file: None,
                                     });
                                 }
                             } else {
@@ -626,6 +690,7 @@ impl<'a> Analyzer<'a> {
                                         "operator '.' must have struct type expression on left"
                                             .to_string(),
                                     span: binary_expr.left.span.clone(),
+                                    file: None,
                                 });
                             }
                         } else {
@@ -633,6 +698,7 @@ impl<'a> Analyzer<'a> {
                                 message: "operator '.' cannot have void expression on left"
                                     .to_string(),
                                 span: binary_expr.left.span.clone(),
+                                file: None,
                             });
                         }
                     } else {
@@ -640,6 +706,7 @@ impl<'a> Analyzer<'a> {
                             message: "operator '.' can only have an identifier on it's right"
                                 .to_string(),
                             span: binary_expr.right.span.clone(),
+                            file: None,
                         });
                     }
                 } else {
@@ -650,9 +717,10 @@ impl<'a> Analyzer<'a> {
                         if let Some(right_expr_type) = &binary_expr.right.typ {
                             if !self.type_eq(right_expr_type, left_expr_type) {
                                 return Err(Error {
-                                message: "binary expressions must have the same type expression on both sides".into(),
-                                span: expr.span.clone(),
-                            });
+                                    message: "binary expressions must have the same type expression on both sides".into(),
+                                    span: expr.span.clone(),
+                                    file: None,
+                                });
                             }
 
                             if let ast::TypeKind::Prim(prim_type) = &left_expr_type.kind {
@@ -662,6 +730,7 @@ impl<'a> Analyzer<'a> {
                                             return Err(Error {
                                                 message: "left of assignment can only be variable or get expression".into(),
                                                 span: binary_expr.left.span.clone(),
+                                                file: None,
                                             });
                                         }
                                         expr.typ = Some(left_expr_type.clone());
@@ -678,6 +747,7 @@ impl<'a> Analyzer<'a> {
                                                     "binary expressions are only valid on primitive numeric operands"
                                                         .into(),
                                                 span: expr.span.clone(),
+                                                file: None,
                                             });
                                         }
 
@@ -697,11 +767,12 @@ impl<'a> Analyzer<'a> {
                                     token::TokenKind::AndAnd | token::TokenKind::OrOr => {
                                         if !matches!(prim_type, ast::PrimType::Bool) {
                                             return Err(Error {
-                                            message:
-                                                "operator `&&` & `||` can only be used with boolean operands"
-                                                    .into(),
-                                            span: expr.span.clone(),
-                                        });
+                                                message:
+                                                    "operator `&&` & `||` can only be used with boolean operands"
+                                                        .into(),
+                                                span: expr.span.clone(),
+                                                file: None,
+                                            });
                                         }
                                     }
                                     _ => unreachable!(),
@@ -712,6 +783,7 @@ impl<'a> Analyzer<'a> {
                         return Err(Error {
                             message: "cannot use void expression in a binary expression".into(),
                             span: expr.span.clone(),
+                            file: None,
                         });
                     }
                 }
@@ -724,6 +796,7 @@ impl<'a> Analyzer<'a> {
                     return Err(Error {
                         message: "undefined variable".into(),
                         span: expr.span.clone(),
+                        file: None,
                     });
                 }
             }
@@ -743,6 +816,7 @@ impl<'a> Analyzer<'a> {
                                     return Err(Error {
                                         message: "invalid argument type".into(),
                                         span: arg.span.clone(),
+                                        file: None,
                                     });
                                 }
                             } else {
@@ -750,6 +824,7 @@ impl<'a> Analyzer<'a> {
                                     message: "cannot use void expression as function argument"
                                         .into(),
                                     span: call_expr.callee.span.clone(),
+                                    file: None,
                                 });
                             }
                         }
@@ -762,12 +837,14 @@ impl<'a> Analyzer<'a> {
                         return Err(Error {
                             message: "callee must be of function type".into(),
                             span: call_expr.callee.span.clone(),
+                            file: None,
                         });
                     }
                 } else {
                     return Err(Error {
                         message: "cannot call void expression".into(),
                         span: call_expr.callee.span.clone(),
+                        file: None,
                     });
                 }
             }
@@ -783,18 +860,21 @@ impl<'a> Analyzer<'a> {
                             return Err(Error {
                                 message: "cannot cast non-numeric primitive expression".into(),
                                 span: as_expr.expr.span.clone(),
+                                file: None,
                             });
                         }
                     } else {
                         return Err(Error {
                             message: "can only cast numeric primitives or sum type values".into(),
                             span: as_expr.expr.span.clone(),
+                            file: None,
                         });
                     }
                 } else {
                     return Err(Error {
                         message: "cannot cast void expression".into(),
                         span: as_expr.expr.span.clone(),
+                        file: None,
                     });
                 }
             }
@@ -806,6 +886,7 @@ impl<'a> Analyzer<'a> {
                         return Err(Error {
                             message: "incorrect number of initializers".into(),
                             span: expr.span.clone(),
+                            file: None,
                         });
                     }
 
@@ -826,6 +907,7 @@ impl<'a> Analyzer<'a> {
                                     message: "invalid initializer for member in struct literal"
                                         .into(),
                                     span: init_ident.span.clone(),
+                                    file: None,
                                 });
                             }
                         } else {
@@ -835,6 +917,7 @@ impl<'a> Analyzer<'a> {
                                     self.file.lexeme(&init_ident.span)
                                 ),
                                 span: init_ident.span.clone(),
+                                file: None,
                             });
                         }
                     }
@@ -844,6 +927,7 @@ impl<'a> Analyzer<'a> {
                     return Err(Error {
                         message: "struct literal must use struct type".into(),
                         span: struct_lit.typ.span.clone(),
+                        file: None,
                     });
                 }
             }
@@ -860,6 +944,7 @@ impl<'a> Analyzer<'a> {
                         return Err(Error {
                             message: "cannot use void expression as array literal element".into(),
                             span: expr.span.clone(),
+                            file: None,
                         });
                     }
                 }
@@ -870,6 +955,7 @@ impl<'a> Analyzer<'a> {
                             return Err(Error {
                                 message: "cannot infer type of empty array literal".into(),
                                 span: expr.span.clone(),
+                                file: None,
                             });
                         }
                     } else {
@@ -896,12 +982,14 @@ impl<'a> Analyzer<'a> {
                         return Err(Error {
                             message: "index target has non-array type".into(),
                             span: idx_expr.target.span.clone(),
+                            file: None,
                         });
                     }
                 } else {
                     return Err(Error {
                         message: "cannot index void expression".into(),
                         span: idx_expr.target.span.clone(),
+                        file: None,
                     });
                 }
             }
@@ -958,6 +1046,7 @@ impl<'a> Analyzer<'a> {
                     return Err(Error {
                         span: stmt.pointer.clone(),
                         message: "re-importing previously imported module".into(),
+                        file: None,
                     });
                 }
 
@@ -980,37 +1069,35 @@ impl<'a> Analyzer<'a> {
                                 "could not read imported file. OS Error: {}",
                                 io_error.to_string()
                             ),
+                            file: None,
                         })
                     }
                 };
 
                 let tokens = match lexer::lex(&imported_file.source) {
                     Ok(tokens) => tokens,
-                    Err(err) => {
-                        return Err(Error {
-                            span: stmt.pointer.clone(),
-                            message: format!("lex error in imported module. {}", err.message),
-                        })
+                    Err(mut err) => {
+                        err.file = Some(imported_file);
+                        err.message = format!("lex error in imported module. {}", err.message);
+                        return Err(err);
                     }
                 };
 
                 imported_file.stmts = match parser::parse(&tokens) {
                     Ok(stmts) => stmts,
-                    Err(err) => {
-                        return Err(Error {
-                            span: stmt.pointer.clone(),
-                            message: format!("parse error in imported module. {}", err.message),
-                        })
+                    Err(mut err) => {
+                        err.file = Some(imported_file);
+                        err.message = format!("parse error in imported module. {}", err.message);
+                        return Err(err);
                     }
                 };
 
                 imported_file.direct_deps = match analyze_mut(&mut imported_file) {
                     Ok(imports) => imports,
-                    Err(err) => {
-                        return Err(Error {
-                            span: stmt.pointer.clone(),
-                            message: format!("analysis error in imported module. {}", err.message),
-                        })
+                    Err(mut err) => {
+                        err.file = Some(imported_file);
+                        err.message = format!("analysis error in imported module. {}", err.message);
+                        return Err(err);
                     }
                 };
 
@@ -1063,10 +1150,7 @@ impl<'a> Analyzer<'a> {
 
                                 self.typespace.insert(
                                     struct_name,
-                                    TypeInfo {
-                                        kind: ast::TypeKind::Struct(struct_type),
-                                        methods: HashMap::new(),
-                                    },
+                                    TypeInfo::new(ast::TypeKind::Struct(struct_type)),
                                 );
                             }
                         }

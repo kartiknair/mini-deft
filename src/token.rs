@@ -108,6 +108,7 @@ impl Token {
         Error {
             span: self.span.clone(),
             message: message.into(),
+            file: None,
         }
     }
 }

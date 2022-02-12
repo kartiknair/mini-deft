@@ -106,6 +106,7 @@ impl<'a> Parser<'a> {
             Err(Error {
                 message: "unexpected end of file".into(),
                 span: self.tokens.last().unwrap().span.clone(),
+                file: None,
             })
         }
     }
@@ -120,6 +121,7 @@ impl<'a> Parser<'a> {
                     self.tokens.last().unwrap().span.clone()
                 }
             },
+            file: None,
         }
     }
 
@@ -140,12 +142,14 @@ impl<'a> Parser<'a> {
                 Err(Error {
                     message: message.into(),
                     span: token.span.clone(),
+                    file: None,
                 })
             }
         } else {
             Err(Error {
                 message: message.into(),
                 span: self.tokens.last().unwrap().span.clone(),
+                file: None,
             })
         }
     }

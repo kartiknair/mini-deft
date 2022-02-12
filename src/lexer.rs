@@ -50,6 +50,7 @@ impl Lexer {
             Err(Error {
                 message: "unexpected end of file".into(),
                 span: self.get_span(),
+                file: None,
             })
         }
     }
@@ -60,6 +61,7 @@ impl Lexer {
                 return Err(Error {
                     message: "strings must be on a single line".into(),
                     span: self.get_span(),
+                    file: None,
                 });
             }
 
@@ -70,6 +72,7 @@ impl Lexer {
             return Err(Error {
                 message: "unterminated string literal".into(),
                 span: self.get_span(),
+                file: None,
             });
         }
 
@@ -142,6 +145,7 @@ impl Lexer {
                     Err(Error {
                         span: self.get_span(),
                         message: "expected '&' after '&'".into(),
+                        file: None,
                     })
                 }
             }
@@ -248,6 +252,7 @@ impl Lexer {
                     Err(Error {
                         message: "unexpected character".into(),
                         span: self.get_span(),
+                        file: None,
                     })
                 }
             }
