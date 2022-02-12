@@ -654,7 +654,19 @@ impl<'a> Analyzer<'a> {
                     if let ast::ExprKind::Var(var_expr) = &binary_expr.right.kind {
                         let member_name = self.file.lexeme(&var_expr.ident.span);
 
-                        let type_name = binary_expr.left.typ.as_ref().unwrap().kind.type_name();
+                        let type_name = if let ast::TypeKind::Struct(struct_type) =
+                            &binary_expr.left.typ.as_ref().unwrap().kind
+                        {
+                            struct_type.name.clone()
+                        } else {
+                            format!(
+                                "{}.{}",
+                                self.file.id(),
+                                binary_expr.left.typ.as_ref().unwrap().kind.type_name()
+                            )
+                        };
+                        dbg!(&type_name);
+
                         if let Some(type_info) = self.typespace.get(&type_name) {
                             if let Some(method_type) = type_info.methods.get(member_name) {
                                 expr.typ = Some(ast::Type {

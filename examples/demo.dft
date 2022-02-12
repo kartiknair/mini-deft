@@ -22,7 +22,7 @@ fun distance() f64 for Line {
 
 fun fib(n i32) i32 {
     if n < 2 {
-        return 0
+        return n
     }
 
     return fib(n-1) + fib(n-2)

@@ -109,19 +109,20 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
         };
 
         let fun_name = if let Some(target_type) = &func.target_type {
-            format!(
-                "{}.{}",
-                target_type.kind.type_name(),
-                file.lexeme(&func.ident.span)
-            )
-        } else {
-            file.lexeme(&func.ident.span).to_string()
-        };
+            let type_name = if let ast::TypeKind::Struct(struct_type) = &target_type.kind {
+                struct_type.name.clone()
+            } else {
+                format!("{}.{}", self.file.id(), target_type.kind.type_name())
+            };
 
-        let fun_name = if func.external || fun_name == "main" {
-            fun_name
+            format!("{}.{}", type_name, file.lexeme(&func.ident.span))
         } else {
-            format!("{}.{}", file.id(), fun_name)
+            let lexeme = file.lexeme(&func.ident.span);
+            if func.external || lexeme == "main" {
+                lexeme.to_string()
+            } else {
+                format!("{}.{}", file.id(), lexeme)
+            }
         };
 
         dbg!(&fun_name);
@@ -850,9 +851,20 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                         if let ast::ExprKind::Var(var_expr) = &binary_expr.right.kind {
                             // Transform `target.method(42)` to `target.method(target, 42)`
                             let target_ptr = self.gen_expr_as_ptr(&*binary_expr.left);
+                            let type_name = if let ast::TypeKind::Struct(struct_type) =
+                                &binary_expr.left.typ.as_ref().unwrap().kind
+                            {
+                                struct_type.name.clone()
+                            } else {
+                                format!(
+                                    "{}.{}",
+                                    self.file.id(),
+                                    binary_expr.left.typ.as_ref().unwrap().kind.type_name()
+                                )
+                            };
                             if let Some(func) = self.module.get_function(&format!(
                                 "{}.{}",
-                                binary_expr.left.typ.as_ref().unwrap().kind.type_name(),
+                                type_name,
                                 self.file.lexeme(&var_expr.ident.span)
                             )) {
                                 let mut genned_args = call_expr
