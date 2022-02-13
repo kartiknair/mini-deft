@@ -45,14 +45,42 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                 },
                 ast::PrimType::Bool => self.context.bool_type().into(),
             },
-            ast::TypeKind::Box(box_type) => self
-                .gen_type(&*box_type.eltype)
-                .into(),
+            ast::TypeKind::Box(box_type) => {
+                let box_type = self.gen_type(&*box_type.eltype);
+                let drop_func_name = format!("{}.{}.drop", self.file.id(), typ.kind.type_name());
+                let drop_func = self.module.get_function(&drop_func_name)
+                    .unwrap_or_else(|| {
+                        self.module.add_function(
+                            &drop_func_name,
+                            self.context.void_type().fn_type(&vec![
+                                box_type.ptr_type(AddressSpace::Generic).into(),
+                            ], false),
+                            None,
+                        )
+                    });
+
+                let prev_block = if let Some(current_function) = self.current_function {
+                    current_function.get_last_basic_block()
+                } else {
+                    None
+                };
+                
+                let drop_func_block = self.context.append_basic_block(drop_func, "entry");
+                self.builder.position_at_end(drop_func_block);
+                self.builder.build_free(drop_func.get_first_param().unwrap().into_pointer_value());
+                self.builder.build_return(None);
+
+                if let Some(prev_block) = prev_block {
+                    self.builder.position_at_end(prev_block);
+                }
+
+                box_type
+            }
             ast::TypeKind::Arr(arr_type) => {
                 // prefixed with `.` to avoic collision with user-defined types
                 let prefixed_name = format!(".{}", typ.kind.type_name());
 
-                self.module
+                let arr_type = self.module
                     .get_struct_type(&prefixed_name)
                     .unwrap_or_else(|| {
                         let blank_st = self.context.opaque_struct_type(&prefixed_name);
@@ -64,8 +92,47 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                             false,
                         );
                         blank_st
-                    })
-                    .into()
+                    });
+                
+                let drop_func_name = format!("{}.{}.drop", self.file.id(), typ.kind.type_name());
+                self.module.get_function(&drop_func_name)
+                    .unwrap_or_else(|| {
+                        let drop_func = self.module.add_function(
+                            &drop_func_name,
+                            self.context.void_type().fn_type(&vec![
+                                arr_type.ptr_type(AddressSpace::Generic).into(),
+                            ], false),
+                            None,
+                        );
+
+                        let prev_block = if let Some(current_function) = self.current_function {
+                            current_function.get_last_basic_block()
+                        } else {
+                            None
+                        };
+                        
+                        let drop_func_block = self.context.append_basic_block(drop_func, "entry");
+                        self.builder.position_at_end(drop_func_block);
+                        self.builder.build_free(
+                            self.builder.build_load(
+                                self.builder.build_struct_gep(
+                                    drop_func.get_first_param().unwrap().into_pointer_value(), 
+                                    0, 
+                                    "",
+                                    ).unwrap(),
+                                "",
+                            ).into_pointer_value()
+                        );
+                        self.builder.build_return(None);
+        
+                        if let Some(prev_block) = prev_block {
+                            self.builder.position_at_end(prev_block);
+                        } 
+                        
+                        drop_func
+                    });
+
+                arr_type.into()
             }
             ast::TypeKind::Fun(_) => todo!(),
             ast::TypeKind::Struct(struct_type) => {
@@ -168,12 +235,19 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
             &self.file
         };
 
+        let struct_name = format!("{}.{}", file.id(), file.lexeme(&struct_decl.ident.span));
+
+        let struct_type = ast::StructType {
+            name: struct_name.clone(),
+            members: struct_decl
+                .members
+                .iter()
+                .map(|(ident, typ)| (file.lexeme(&ident.span).into(), typ.clone()))
+                .collect(),
+        };
+
         self.module
-            .get_struct_type(&format!(
-                "{}.{}",
-                file.id(),
-                file.lexeme(&struct_decl.ident.span)
-            ))
+            .get_struct_type(&struct_name)
             .expect("internal-error: did not predeclare struct type")
             .set_body(
                 &struct_decl
@@ -184,6 +258,50 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                     .collect::<Vec<BasicTypeEnum>>(),
                 false,
             );
+
+        if !ast::TypeKind::Struct(struct_type.clone()).is_copyable() {
+            let drop_func = self.module.add_function(
+                &format!("{}.drop", &struct_name),
+                self.context.void_type().fn_type(
+                    &vec![self
+                        .module
+                        .get_struct_type(&struct_name)
+                        .unwrap()
+                        .ptr_type(AddressSpace::Generic)
+                        .into()],
+                    false,
+                ),
+                None,
+            );
+
+            let struct_drop_block = self.context.append_basic_block(drop_func, "entry");
+            self.builder.position_at_end(struct_drop_block);
+            for (i, (_, member_type)) in struct_type.members.iter().enumerate() {
+                if !member_type.kind.is_copyable() {
+                    let member_drop_func_name =
+                        if let ast::TypeKind::Struct(struct_type) = &member_type.kind {
+                            format!("{}.drop", struct_type.name)
+                        } else {
+                            format!("{}.{}.drop", self.file.id(), member_type.kind.type_name())
+                        };
+
+                    self.builder.build_call(
+                        self.module.get_function(&member_drop_func_name).unwrap(),
+                        &vec![self
+                            .builder
+                            .build_struct_gep(
+                                drop_func.get_first_param().unwrap().into_pointer_value(),
+                                i as u32,
+                                "",
+                            )
+                            .unwrap()
+                            .into()],
+                        "",
+                    );
+                }
+            }
+            self.builder.build_return(None);
+        }
     }
 
     fn gen_fun(&mut self, func: &ast::FunDecl) -> FunctionValue<'ctx> {
@@ -296,7 +414,7 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
             let alloca = self
                 .builder
                 .build_alloca(self.gen_type(expr.typ.as_ref().unwrap()), "");
-            self.builder.build_store(alloca, self.gen_expr(expr));
+            self.builder.build_store(alloca, self.gen_expr(expr, false));
             alloca
         }
     }
@@ -306,7 +424,7 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
         idx_expr: &ast::IdxExpr,
     ) -> inkwell::values::PointerValue<'ctx> {
         let genned_target = self.gen_expr_as_ptr(&idx_expr.target);
-        let genned_idx = self.gen_expr(&idx_expr.idx);
+        let genned_idx = self.gen_expr(&idx_expr.idx, false);
 
         let buffer = self
             .builder
@@ -323,10 +441,10 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
         ptr_to_el
     }
 
-    fn gen_expr(&mut self, expr: &ast::Expr) -> BasicValueEnum<'ctx> {
-        match &expr.kind {
+    fn gen_expr(&mut self, expr: &ast::Expr, has_owner: bool) -> BasicValueEnum<'ctx> {
+        let genned_expr = match &expr.kind {
             ast::ExprKind::Unary(unary_expr) => {
-                let target_value = self.gen_expr(&*unary_expr.expr);
+                let target_value = self.gen_expr(&*unary_expr.expr, true);
 
                 match &unary_expr.op.kind {
                     token::TokenKind::Bang => self
@@ -356,35 +474,10 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                         _ => unreachable!(),
                     },
                     token::TokenKind::Tilde => {
-                        let malloc_decl = self.module.get_function("malloc").unwrap_or_else(|| {
-                            self.module.add_function(
-                                "malloc",
-                                self.context
-                                    .i8_type()
-                                    .ptr_type(AddressSpace::Generic)
-                                    .fn_type(&[self.context.i64_type().into()], false),
-                                None,
-                            )
-                        });
-
-                        let gep = unsafe {
-                            self.builder.build_gep(
-                                self.gen_type(unary_expr.expr.typ.as_ref().unwrap())
-                                    .ptr_type(AddressSpace::Generic)
-                                    .const_null(),
-                                &[self.context.i32_type().const_int(1, false)],
-                                "",
-                            )
-                        };
-
-                        let size =
-                            self.builder
-                                .build_ptr_to_int(gep, self.context.i64_type(), "name");
-                        let heap_ptr = self
-                            .builder
-                            .build_call(malloc_decl, &[size.into()], "")
-                            .try_as_basic_value()
-                            .unwrap_left();
+                        let heap_ptr = self.builder.build_malloc(
+                            self.gen_type(unary_expr.expr.typ.as_ref().unwrap()), 
+                            "",
+                        ).unwrap();
 
                         let casted_ptr = self.builder.build_bitcast(
                             heap_ptr,
@@ -404,12 +497,12 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                     match &target.kind {
                         ast::ExprKind::Var(var_expr) => {
                             let ptr = *self.namespace.get(self.file.lexeme(&var_expr.ident.span)).unwrap();
-                            self.builder.build_store(ptr, self.gen_expr(&*binary_expr.right));
+                            self.builder.build_store(ptr, self.gen_expr(&*binary_expr.right, false));
                             self.builder.build_load(ptr, "")
                         }
                         ast::ExprKind::Idx(idx_expr) => {
                             let ptr_to_el = self.gen_ptr_to_arr_el(idx_expr);
-                            self.builder.build_store(ptr_to_el, self.gen_expr(&*binary_expr.right));
+                            self.builder.build_store(ptr_to_el, self.gen_expr(&*binary_expr.right, false));
                             self.builder.build_load(ptr_to_el, "")
                         }
                         ast::ExprKind::Binary(get_expr) => {
@@ -418,7 +511,8 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                             }
 
                             let struct_value = self.gen_expr_as_ptr(&*get_expr.left);
-                            let new_member_value = self.gen_expr(&*binary_expr.right);
+                            // TODO: drop() the old member value
+                            let new_member_value = self.gen_expr(&*binary_expr.right, true);
 
                             if let ast::TypeKind::Struct(struct_type) = &get_expr.left.typ.as_ref().unwrap().kind {
                                 if let ast::ExprKind::Var(var_expr) = &get_expr.right.kind {
@@ -491,8 +585,8 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                 | token::TokenKind::Star
                 | token::TokenKind::Slash
                 | token::TokenKind::Percent => {
-                    let left_value = self.gen_expr(&*binary_expr.left);
-                    let right_value = self.gen_expr(&*binary_expr.right);
+                    let left_value = self.gen_expr(&*binary_expr.left, false);
+                    let right_value = self.gen_expr(&*binary_expr.right, false);
 
                     match &binary_expr.left.typ.as_ref().unwrap().kind {
                         ast::TypeKind::Prim(prim_type) => match prim_type {
@@ -618,8 +712,8 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                 | token::TokenKind::GreaterEqual
                 | token::TokenKind::EqualEqual
                 | token::TokenKind::BangEqual => {
-                    let left_value = self.gen_expr(&*binary_expr.left);
-                    let right_value = self.gen_expr(&*binary_expr.right);
+                    let left_value = self.gen_expr(&*binary_expr.left, false);
+                    let right_value = self.gen_expr(&*binary_expr.right, false);
 
                     match &binary_expr.left.typ.as_ref().unwrap().kind {
                         ast::TypeKind::Prim(prim_type) => match prim_type {
@@ -713,7 +807,7 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                     // ```
                     let result = self.builder.build_alloca(self.context.bool_type(), "");
 
-                    let left_value = self.gen_expr(&*binary_expr.left);
+                    let left_value = self.gen_expr(&*binary_expr.left, false);
                     let current_func = self
                         .current_function
                         .expect("internal-error: cannot generate if statement outside function");
@@ -733,7 +827,7 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                     self.builder.build_unconditional_branch(after_block);
 
                     self.builder.position_at_end(right_value_block);
-                    let right_value = self.gen_expr(&*binary_expr.right);
+                    let right_value = self.gen_expr(&*binary_expr.right, false);
                     self.builder.build_store(
                         result,
                         self.builder.build_and(
@@ -748,8 +842,8 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                     self.builder.build_load(result, "")
                 }
                 token::TokenKind::OrOr => {
-                    let left_value = self.gen_expr(&*binary_expr.left);
-                    let right_value = self.gen_expr(&*binary_expr.right);
+                    let left_value = self.gen_expr(&*binary_expr.left, false);
+                    let right_value = self.gen_expr(&*binary_expr.right, false);
                     self.builder
                         .build_or(
                             left_value.into_int_value(),
@@ -907,7 +1001,7 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
 
                 let mut genned_inits = Vec::new();
                 for (_, init) in &struct_lit.inits {
-                    genned_inits.push(self.gen_expr(init));
+                    genned_inits.push(self.gen_expr(init, true));
                 }
 
                 let struct_alloca = self.builder.build_alloca(struct_type, "");
@@ -938,57 +1032,20 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
 
                 if let ast::TypeKind::Arr(arr_type) = &expr.typ.as_ref().unwrap().kind {
                     if !arr_lit.elements.is_empty() {
-                        let malloc_decl = self.module.get_function("malloc").unwrap_or_else(|| {
-                            self.module.add_function(
-                                "malloc",
-                                self.context
-                                    .i8_type()
-                                    .ptr_type(AddressSpace::Generic)
-                                    .fn_type(&[self.context.i64_type().into()], false),
-                                None,
-                            )
-                        });
-
-                        let sizeof_gep = unsafe {
-                            self.builder.build_gep(
-                                self.gen_type(&arr_type.eltype)
-                                    .ptr_type(AddressSpace::Generic)
-                                    .const_null(),
-                                &[self.context.i32_type().const_int(1, false)],
-                                "",
-                            )
-                        };
-
-                        let el_sizeof = self.builder.build_ptr_to_int(
-                            sizeof_gep,
-                            self.context.i64_type(),
-                            "name",
-                        );
-                        let total_sizeof = self.builder.build_int_mul(
-                            el_sizeof,
-                            self.context
-                                .i64_type()
-                                .const_int(arr_lit.elements.len() as u64, false),
-                            "",
-                        );
-
                         let heap_ptr = self
                             .builder
-                            .build_call(malloc_decl, &[total_sizeof.into()], "")
-                            .try_as_basic_value()
-                            .unwrap_left();
-                        let casted_ptr = self.builder.build_pointer_cast(
-                            heap_ptr.into_pointer_value(),
-                            self.gen_type(&arr_type.eltype)
-                                .ptr_type(AddressSpace::Generic),
-                            "",
-                        );
+                            .build_array_malloc(
+                                self.gen_type(&arr_type.eltype), 
+                                self.context.i64_type().const_int(arr_lit.elements.len() as u64, false), 
+                                "",
+                            )
+                            .unwrap();
 
                         for (i, el) in arr_lit.elements.iter().enumerate() {
-                            let genned_el = self.gen_expr(el);
+                            let genned_el = self.gen_expr(el, true);
                             let ptr_to_el_in_buffer = unsafe {
                                 self.builder.build_gep(
-                                    casted_ptr,
+                                    heap_ptr,
                                     &[self.context.i64_type().const_int(i as u64, false)],
                                     "",
                                 )
@@ -1001,7 +1058,7 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                             .build_alloca(self.module.get_struct_type(&prefixed_name).unwrap(), "");
                         self.builder.build_store(
                             self.builder.build_struct_gep(arr_alloca, 0, "").unwrap(),
-                            casted_ptr,
+                            heap_ptr,
                         );
                         self.builder.build_store(
                             self.builder.build_struct_gep(arr_alloca, 1, "").unwrap(),
@@ -1077,7 +1134,36 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                     lit
                 ),
             },
+        };
+
+        if let Some(expr_type) = &expr.typ {
+            if !expr.kind.is_lvalue() && !expr_type.kind.is_copyable() && !has_owner {
+                let prev_block = self.current_function.unwrap().get_last_basic_block().unwrap();
+    
+                let drop_func_name = if let ast::TypeKind::Struct(struct_type) = &expr_type.kind {
+                    format!("{}.drop", struct_type.name)
+                } else {
+                    format!("{}.{}.drop", self.file.id(), &expr_type.kind.type_name())
+                };
+    
+                let alloca = self.builder.build_alloca(
+                    self.gen_type(expr_type), 
+                    "",
+                );
+                self.builder.build_store(alloca, genned_expr);
+    
+                self.builder.position_at_end(self.function_retblock.unwrap());
+                self.builder.build_call(
+                    self.module.get_function(&drop_func_name).unwrap(), 
+                    &vec![alloca.into()], 
+                    "",
+                );
+    
+                self.builder.position_at_end(prev_block);
+            }    
         }
+
+        genned_expr
     }
 
     fn gen_stmt(&mut self, stmt: &ast::Stmt) {
@@ -1088,18 +1174,20 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                     self.file.lexeme(&var_decl.ident.span),
                 );
 
-                let value = self.gen_expr(&var_decl.init);
+                // technically the value does have an owner but that doesn't matter here
+                let value = self.gen_expr(&var_decl.init, false);
                 self.builder.build_store(alloca, value);
                 self.namespace
                     .insert(self.file.lexeme(&var_decl.ident.span).to_string(), alloca);
             }
             ast::StmtKind::Expr(expr_stmt) => {
-                self.gen_expr(&expr_stmt.expr);
+                self.gen_expr(&expr_stmt.expr, false);
             }
             ast::StmtKind::Return(ret_stmt) => {
                 if let Some(value) = &ret_stmt.value {
+                    // the calling frame owns the returned value, not the callee
                     self.builder
-                        .build_store(self.function_retval.unwrap(), self.gen_expr(value));
+                        .build_store(self.function_retval.unwrap(), self.gen_expr(value, true));
                 }
 
                 self.builder
@@ -1116,7 +1204,7 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                     .current_function
                     .expect("internal-error: cannot generate if statement outside function");
 
-                let cond_value = self.gen_expr(&if_stmt.condition);
+                let cond_value = self.gen_expr(&if_stmt.condition, false);
                 let then_block = self.context.append_basic_block(current_func, "");
                 let elif_blocks = if_stmt
                     .elif_stmts
@@ -1170,7 +1258,7 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
 
                     self.builder.position_at_end(elif_blocks[i].0);
                     self.builder.build_conditional_branch(
-                        self.gen_expr(&if_stmt.elif_stmts[i].0).into_int_value(),
+                        self.gen_expr(&if_stmt.elif_stmts[i].0, false).into_int_value(),
                         elif_blocks[i].1,
                         if i == (elif_blocks.len() - 1) {
                             else_block
@@ -1187,7 +1275,7 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                     .current_function
                     .expect("internal-error: cannot generate while statement outside function");
 
-                let cond_value = self.gen_expr(&while_stmt.condition);
+                let cond_value = self.gen_expr(&while_stmt.condition, false);
                 let while_block = self.context.append_basic_block(current_func, "");
                 let after_block = self.context.append_basic_block(current_func, "");
 

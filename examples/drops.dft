@@ -1,0 +1,10 @@
+extern fun println_i32(n i32)
+
+fun test() [i32] {
+    return [1, 2, 3]    
+}
+
+fun main() {
+    test()
+    println_i32(test()[2])
+}
