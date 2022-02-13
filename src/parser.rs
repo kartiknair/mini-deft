@@ -229,6 +229,21 @@ impl<'a> Parser<'a> {
                 nested.span = grouping_start..nested.span.end;
                 typ = Some(nested);
             }
+            TokenKind::LeftBracket => {
+                let array_type_start = self.peek()?.span.start;
+                self.current += 1;
+
+                let eltype = self.parse_type()?;
+                let closing_bracket =
+                    self.expect(TokenKind::RightBracket, "unclosed array type")?;
+
+                typ = Some(ast::Type {
+                    span: array_type_start..closing_bracket.span.end,
+                    kind: ast::TypeKind::Arr(ast::ArrType {
+                        eltype: Box::new(eltype),
+                    }),
+                });
+            }
             _ => {}
         }
 
