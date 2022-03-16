@@ -1,5 +1,5 @@
 import "math.dft"
-import "point.dft"
+import "point.dft" pnt
 
 extern fun println_f64(n f64)
 
@@ -9,6 +9,6 @@ fun main() {
     var sum = math.sum(n1, n2)
     println_f64(sum)
 
-    var p1 = point.Point{x: 34.0, y: 56.0}
+    var p1 = pnt.Point{x: 34.0, y: 56.0}
     println_f64(math.sum(p1.x, p1.y))
 }

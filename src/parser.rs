@@ -125,14 +125,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn lookback(&self) -> &Token {
-        if self.current == 0 {
-            panic!("internal-error: parser called lookback on 0-value cursor.")
-        }
-
-        &self.tokens[self.current]
-    }
-
     fn expect(&mut self, kind: TokenKind, message: &str) -> Result<&Token, Error> {
         if let Some(token) = self.tokens.get(self.current) {
             if token.kind == kind {
@@ -417,11 +409,12 @@ impl<'a> Parser<'a> {
                     }
                 }
                 TokenKind::Caret => {
+                    let caret = self.peek()?.clone();
                     self.current += 1;
                     expr = ast::Expr {
-                        span: expr.span.start..self.lookback().span.end,
+                        span: expr.span.start..caret.span.end,
                         kind: ast::UnaryExpr {
-                            op: self.lookback().clone(),
+                            op: caret,
                             expr: Box::new(expr),
                         }
                         .into(),

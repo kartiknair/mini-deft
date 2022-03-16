@@ -85,7 +85,7 @@ impl TokenKind {
     }
 
     pub fn is_prefix_op(&self) -> bool {
-        matches!(*self, Self::Minus | Self::Bang | Self::Tilde)
+        matches!(*self, Self::Minus | Self::Bang | Self::Tilde | Self::Copy)
     }
 
     pub fn is_binary_op(&self) -> bool {

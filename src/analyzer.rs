@@ -1,4 +1,7 @@
-use std::{borrow::Borrow, collections::HashMap, convert::TryInto, mem::discriminant, path::Path};
+use std::{
+    borrow::Borrow, collections::HashMap, convert::TryInto, mem::discriminant, ops::Deref,
+    path::Path,
+};
 
 use crate::{ast, common::Error, lexer, parser, token};
 
@@ -588,6 +591,29 @@ impl<'a> Analyzer<'a> {
                                 .into(),
                                 span: 0..0,
                             });
+                        }
+                        token::TokenKind::Caret => {
+                            if let ast::TypeKind::Box(box_type) = &expr_type.kind {
+                                expr.typ = Some(box_type.eltype.deref().clone());
+                                return Ok(());
+                            }
+
+                            return Err(Error {
+                                message: "operator '^' is only valid on box expressions".into(),
+                                span: expr.span.clone(),
+                                file: None,
+                            });
+                        }
+                        token::TokenKind::Copy => {
+                            if expr_type.kind.is_copyable() {
+                                return Err(Error {
+                                    message: "unrequired copy on copyable type".into(),
+                                    span: expr.span.clone(),
+                                    file: None,
+                                });
+                            }
+
+                            expr.typ = Some(expr_type.clone());
                         }
                         _ => {
                             panic!(

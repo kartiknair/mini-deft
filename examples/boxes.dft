@@ -1,0 +1,7 @@
+extern fun println_i32(n i32)
+
+fun main() {
+    var x1 = ~32
+    var x2 = copy x1
+    println_i32(x1^)
+}

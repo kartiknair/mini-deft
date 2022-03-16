@@ -1,9 +1,9 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, convert::TryInto};
 
 use either::Either;
 use inkwell::{
     context::Context,
-    module::Module,
+    module::{Module, Linkage},
     types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum},
     values::{BasicValueEnum, FunctionValue},
     AddressSpace,
@@ -46,35 +46,91 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                 ast::PrimType::Bool => self.context.bool_type().into(),
             },
             ast::TypeKind::Box(box_type) => {
-                let box_type = self.gen_type(&*box_type.eltype);
+                let genned_box_type = self.gen_type(&*box_type.eltype).ptr_type(AddressSpace::Generic);
+
+                // generate drop function
                 let drop_func_name = format!("{}.{}.drop", self.file.id(), typ.kind.type_name());
-                let drop_func = self.module.get_function(&drop_func_name)
+                self.module.get_function(&drop_func_name)
                     .unwrap_or_else(|| {
-                        self.module.add_function(
+                        let drop_func = self.module.add_function(
                             &drop_func_name,
                             self.context.void_type().fn_type(&vec![
-                                box_type.ptr_type(AddressSpace::Generic).into(),
+                                genned_box_type.ptr_type(AddressSpace::Generic).into(), // ptr to ptr
                             ], false),
-                            None,
-                        )
+                            Some(Linkage::Private),
+                        );
+
+                        let prev_block = if let Some(current_function) = self.current_function {
+                            current_function.get_last_basic_block()
+                        } else {
+                            None
+                        };
+                        
+                        let drop_func_block = self.context.append_basic_block(drop_func, "entry");
+                        self.builder.position_at_end(drop_func_block);
+                        self.builder.build_free(self.builder.build_load(
+                            drop_func.get_first_param().unwrap().into_pointer_value(), 
+                            "",
+                        ).into_pointer_value());
+                        self.builder.build_return(None);
+        
+                        if let Some(prev_block) = prev_block {
+                            self.builder.position_at_end(prev_block);
+                        }
+
+                        drop_func
                     });
 
-                let prev_block = if let Some(current_function) = self.current_function {
-                    current_function.get_last_basic_block()
-                } else {
-                    None
-                };
-                
-                let drop_func_block = self.context.append_basic_block(drop_func, "entry");
-                self.builder.position_at_end(drop_func_block);
-                self.builder.build_free(drop_func.get_first_param().unwrap().into_pointer_value());
-                self.builder.build_return(None);
+                // generate copy function
+                let copy_func_name = format!("{}.{}.copy", self.file.id(), typ.kind.type_name());
+                self.module.get_function(&copy_func_name)
+                    .unwrap_or_else(|| {
+                        let copy_func = self.module.add_function(
+                            &copy_func_name,
+                            genned_box_type.fn_type(&vec![
+                                genned_box_type.into(),
+                            ], false),
+                            Some(Linkage::Private),
+                        );
 
-                if let Some(prev_block) = prev_block {
-                    self.builder.position_at_end(prev_block);
-                }
+                        let prev_block = if let Some(current_function) = self.current_function {
+                            current_function.get_last_basic_block()
+                        } else {
+                            None
+                        };
+                        
+                        let copy_func_block = self.context.append_basic_block(copy_func, "entry");
+                        self.builder.position_at_end(copy_func_block);
+                        
+                        let eltype: BasicTypeEnum = genned_box_type.get_element_type().try_into().unwrap();
+                        let result_ptr = self.builder.build_malloc(eltype, "").unwrap();
+                        if box_type.eltype.kind.is_copyable() {
+                            self.builder.build_store(result_ptr, self.builder.build_load(copy_func.get_first_param().unwrap().into_pointer_value(), ""));
+                        } else {
+                            let nested_copy_func_name = if let ast::TypeKind::Struct(struct_type) = &box_type.eltype.kind {
+                                format!("{}.copy", struct_type.name)
+                            } else {
+                                format!("{}.{}.copy", self.file.id(), box_type.eltype.kind.type_name())
+                            };
+                            self.builder.build_store(
+                                result_ptr, 
+                                self.builder.build_call(
+                                    self.module.get_function(&nested_copy_func_name).unwrap(),
+                                    &vec![],
+                                    "",
+                                ).try_as_basic_value().unwrap_left(),
+                            );
+                        }
+                        self.builder.build_return(Some(&result_ptr));
+        
+                        if let Some(prev_block) = prev_block {
+                            self.builder.position_at_end(prev_block);
+                        }
 
-                box_type
+                        copy_func
+                    });
+
+                genned_box_type.into()
             }
             ast::TypeKind::Arr(arr_type) => {
                 // prefixed with `.` to avoic collision with user-defined types
@@ -102,7 +158,7 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                             self.context.void_type().fn_type(&vec![
                                 arr_type.ptr_type(AddressSpace::Generic).into(),
                             ], false),
-                            None,
+                            Some(Linkage::Private),
                         );
 
                         let prev_block = if let Some(current_function) = self.current_function {
@@ -444,51 +500,75 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
     fn gen_expr(&mut self, expr: &ast::Expr, has_owner: bool) -> BasicValueEnum<'ctx> {
         let genned_expr = match &expr.kind {
             ast::ExprKind::Unary(unary_expr) => {
-                let target_value = self.gen_expr(&*unary_expr.expr, true);
+                if let token::TokenKind::Copy = &unary_expr.op.kind {
+                    let expr_type = unary_expr.expr.typ.as_ref().unwrap();
+                    let copy_func_name = if let ast::TypeKind::Struct(struct_type) = &expr_type.kind {
+                        format!("{}.copy", struct_type.name)
+                    } else {
+                        format!("{}.{}.copy", self.file.id(), &expr_type.kind.type_name())
+                    };
 
-                match &unary_expr.op.kind {
-                    token::TokenKind::Bang => self
-                        .builder
-                        .build_not(target_value.into_int_value(), "")
-                        .into(),
-                    token::TokenKind::Minus => match &unary_expr.expr.typ.as_ref().unwrap().kind {
-                        ast::TypeKind::Prim(prim_type) => match prim_type {
-                            ast::PrimType::Int(_) | ast::PrimType::UInt(_) => self
-                                .builder
-                                .build_int_sub(
-                                    target_value.get_type().const_zero().into_int_value(),
-                                    target_value.into_int_value(),
-                                    "",
-                                )
-                                .into(),
-                            ast::PrimType::Float(_) => self
-                                .builder
-                                .build_float_sub(
-                                    target_value.get_type().const_zero().into_float_value(),
-                                    target_value.into_float_value(),
-                                    "",
-                                )
-                                .into(),
+                    let target_value = self.gen_expr(&*unary_expr.expr, false);
+                    dbg!(&expr_type.kind);
+                    let copied = self.builder.build_call(
+                        self.module.get_function(&copy_func_name).unwrap(),
+                        &vec![target_value.into()],
+                        "",
+                    ).try_as_basic_value().unwrap_left();
+
+                    copied.into()
+                } else {
+                    let target_value = self.gen_expr(&*unary_expr.expr, true);
+
+                    match &unary_expr.op.kind {
+                        token::TokenKind::Bang => self
+                            .builder
+                            .build_not(target_value.into_int_value(), "")
+                            .into(),
+                        token::TokenKind::Minus => match &unary_expr.expr.typ.as_ref().unwrap().kind {
+                            ast::TypeKind::Prim(prim_type) => match prim_type {
+                                ast::PrimType::Int(_) | ast::PrimType::UInt(_) => self
+                                    .builder
+                                    .build_int_sub(
+                                        target_value.get_type().const_zero().into_int_value(),
+                                        target_value.into_int_value(),
+                                        "",
+                                    )
+                                    .into(),
+                                ast::PrimType::Float(_) => self
+                                    .builder
+                                    .build_float_sub(
+                                        target_value.get_type().const_zero().into_float_value(),
+                                        target_value.into_float_value(),
+                                        "",
+                                    )
+                                    .into(),
+                                _ => unreachable!(),
+                            },
                             _ => unreachable!(),
                         },
+                        token::TokenKind::Tilde => {
+                            let heap_ptr = self.builder.build_malloc(
+                                self.gen_type(unary_expr.expr.typ.as_ref().unwrap()), 
+                                "",
+                            ).unwrap();
+
+                            let casted_ptr = self.builder.build_bitcast(
+                                heap_ptr,
+                                self.gen_type(unary_expr.expr.typ.as_ref().unwrap())
+                                    .ptr_type(AddressSpace::Generic),
+                                "",
+                            );
+
+                            self.builder.build_store(casted_ptr.into_pointer_value(), target_value);
+
+                            casted_ptr.into()
+                        }
+                        token::TokenKind::Caret => {
+                            self.builder.build_load(target_value.into_pointer_value(), "")
+                        }
                         _ => unreachable!(),
-                    },
-                    token::TokenKind::Tilde => {
-                        let heap_ptr = self.builder.build_malloc(
-                            self.gen_type(unary_expr.expr.typ.as_ref().unwrap()), 
-                            "",
-                        ).unwrap();
-
-                        let casted_ptr = self.builder.build_bitcast(
-                            heap_ptr,
-                            self.gen_type(unary_expr.expr.typ.as_ref().unwrap())
-                                .ptr_type(AddressSpace::Generic),
-                            "",
-                        );
-
-                        casted_ptr.into()
                     }
-                    _ => unreachable!(),
                 }
             }
             ast::ExprKind::Binary(binary_expr) => match &binary_expr.op.kind {
@@ -1137,6 +1217,8 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
         };
 
         if let Some(expr_type) = &expr.typ {
+            println!("");
+            dbg!(expr_type, &expr.kind, expr.kind.is_lvalue(), expr_type.kind.is_copyable() , has_owner);
             if !expr.kind.is_lvalue() && !expr_type.kind.is_copyable() && !has_owner {
                 let prev_block = self.current_function.unwrap().get_last_basic_block().unwrap();
     
