@@ -4,7 +4,7 @@ use either::Either;
 use inkwell::{
     context::Context,
     module::{Module, Linkage},
-    types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum},
+    types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, AnyType},
     values::{BasicValueEnum, FunctionValue},
     AddressSpace,
 };
@@ -68,10 +68,28 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                         
                         let drop_func_block = self.context.append_basic_block(drop_func, "entry");
                         self.builder.position_at_end(drop_func_block);
+                        if !box_type.eltype.kind.is_copyable() {
+                            let nested_drop_func_name = if let ast::TypeKind::Struct(struct_type) = &box_type.eltype.kind {
+                                format!("{}.drop", struct_type.name)
+                            } else {
+                                format!("{}.{}.drop", self.file.id(), box_type.eltype.kind.type_name())
+                            };
+                            self.builder.build_call(
+                                self.module.get_function(&nested_drop_func_name).unwrap(),
+                                &vec![
+                                    self.builder.build_load(
+                                        drop_func.get_first_param().unwrap().into_pointer_value(),
+                                        ""
+                                    ).into()
+                                ],
+                                "",
+                            );
+                        }
                         self.builder.build_free(self.builder.build_load(
                             drop_func.get_first_param().unwrap().into_pointer_value(), 
                             "",
                         ).into_pointer_value());
+
                         self.builder.build_return(None);
         
                         if let Some(prev_block) = prev_block {
@@ -136,7 +154,7 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                 // prefixed with `.` to avoic collision with user-defined types
                 let prefixed_name = format!(".{}", typ.kind.type_name());
 
-                let arr_type = self.module
+                let arr_struct_type = self.module
                     .get_struct_type(&prefixed_name)
                     .unwrap_or_else(|| {
                         let blank_st = self.context.opaque_struct_type(&prefixed_name);
@@ -144,19 +162,20 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                             &[
                                 self.gen_type(&*arr_type.eltype).ptr_type(AddressSpace::Generic).into(),
                                 self.context.i64_type().into(),
+                                self.context.i64_type().into(),
                             ],
                             false,
                         );
                         blank_st
                     });
-                
+  
                 let drop_func_name = format!("{}.{}.drop", self.file.id(), typ.kind.type_name());
                 self.module.get_function(&drop_func_name)
                     .unwrap_or_else(|| {
                         let drop_func = self.module.add_function(
                             &drop_func_name,
                             self.context.void_type().fn_type(&vec![
-                                arr_type.ptr_type(AddressSpace::Generic).into(),
+                                arr_struct_type.ptr_type(AddressSpace::Generic).into(),
                             ], false),
                             Some(Linkage::Private),
                         );
@@ -169,6 +188,66 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                         
                         let drop_func_block = self.context.append_basic_block(drop_func, "entry");
                         self.builder.position_at_end(drop_func_block);
+                        if !arr_type.eltype.kind.is_copyable() {
+                            let nested_drop_func_name = if let ast::TypeKind::Struct(struct_type) = &arr_type.eltype.kind {
+                                format!("{}.drop", struct_type.name)
+                            } else {
+                                format!("{}.{}.drop", self.file.id(), arr_type.eltype.kind.type_name())
+                            };
+                            let idx_value = self.builder.build_alloca(self.context.i64_type(), "idx");
+                            self.builder.build_store(idx_value, self.context.i64_type().const_int(0, false));
+
+                            let comparison = self.builder.build_int_compare(
+                                inkwell::IntPredicate::ULT,
+                                self.builder.build_load(idx_value, "").into_int_value(),
+                                self.builder.build_load(self.builder.build_struct_gep(
+                                    drop_func.get_first_param().unwrap().into_pointer_value(),
+                                    1,
+                                    "length"
+                                ).unwrap(), "").into_int_value(),
+                                ""
+                            );
+                            
+                            let loop_block = self.context.append_basic_block(drop_func, "loop");
+                            let after_block = self.context.append_basic_block(drop_func, "after");
+                            self.builder.build_conditional_branch(comparison, loop_block, after_block);
+
+                            self.builder.position_at_end(loop_block);
+                            self.builder.build_call(
+                                self.module.get_function(&nested_drop_func_name).unwrap(),
+                                &vec![
+                                    unsafe {          
+                                        self.builder.build_in_bounds_gep(self.builder.build_load(
+                                            self.builder.build_struct_gep(
+                                                drop_func.get_first_param().unwrap().into_pointer_value(), 
+                                                0, 
+                                                "",
+                                                ).unwrap(),
+                                            "",
+                                        ).into_pointer_value(), &[self.builder.build_load(idx_value, "").into_int_value()], "").into()
+                                    }
+                                ],
+                                "",
+                            );
+                            self.builder.build_store(idx_value, self.builder.build_int_add(
+                                self.builder.build_load(idx_value, "").into_int_value(),
+                                self.context.i64_type().const_int(1, false),
+                                ""
+                            ));
+                            let comparison = self.builder.build_int_compare(
+                                inkwell::IntPredicate::ULT,
+                                self.builder.build_load(idx_value, "").into_int_value(),
+                                self.builder.build_load(self.builder.build_struct_gep(
+                                    drop_func.get_first_param().unwrap().into_pointer_value(),
+                                    1,
+                                    "length"
+                                ).unwrap(), "").into_int_value(),
+                                ""
+                            );
+                            self.builder.build_conditional_branch(comparison, loop_block, after_block);
+                        }
+
+
                         self.builder.build_free(
                             self.builder.build_load(
                                 self.builder.build_struct_gep(
@@ -188,13 +267,13 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                         drop_func
                     });
 
-                arr_type.into()
+                arr_struct_type.into()
             }
             ast::TypeKind::Fun(_) => todo!(),
             ast::TypeKind::Struct(struct_type) => {
                 self
                     .module
-                    .get_struct_type(&struct_type.name)
+                    .get_struct_type(&format!("{}.{}", &struct_type.file_id, &struct_type.name))
                     .unwrap()
                     .into()
             }
@@ -233,9 +312,9 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
 
         let fun_name = if let Some(target_type) = &func.target_type {
             let type_name = if let ast::TypeKind::Struct(struct_type) = &target_type.kind {
-                struct_type.name.clone()
+                format!("{}.{}", &struct_type.file_id, &struct_type.name)
             } else {
-                format!("{}.{}", self.file.id(), target_type.kind.type_name())
+                target_type.kind.type_name().to_string()
             };
 
             format!("{}.{}", type_name, file.lexeme(&func.ident.span))
@@ -248,15 +327,13 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
             }
         };
 
-        dbg!(&fun_name);
-
-        self.module.get_function(&fun_name).unwrap_or_else(|| {
+        self.module.get_function(&fun_name).unwrap_or_else(|| -> FunctionValue {
             let mut tmp_params = func
                 .parameters
                 .iter()
                 .map(|(_, typ)| self.gen_type(typ).ptr_type(AddressSpace::Generic).into())
                 .collect::<Vec<BasicMetadataTypeEnum>>();
-            let parameters = if let Some(target_type) = &func.target_type {
+            let mut parameters = if let Some(target_type) = &func.target_type {
                 tmp_params.insert(
                     0,
                     self.gen_type(target_type)
@@ -268,17 +345,44 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                 tmp_params
             };
 
+            let linkage = if func.external {
+                Some(Linkage::External)
+            } else {
+                None
+            };
+
             if let Some(return_type) = &func.return_type {
-                self.module.add_function(
+                let mut has_sret = false;
+                let fn_value = self.module.add_function(
                     &fun_name,
-                    self.gen_type(return_type).fn_type(&parameters, false),
-                    None,
-                )
+                    if let ast::TypeKind::Struct(_) | ast::TypeKind::Arr(_) = &return_type.kind {
+                        has_sret = true;
+                        parameters.insert(
+                            0,
+                            self.gen_type(return_type).ptr_type(AddressSpace::Generic).into(),
+                        );
+                        self.context.void_type().fn_type(&parameters, false)
+                    } else {
+                        self.gen_type(return_type).fn_type(&parameters, false)
+                    },
+                    linkage,
+                );
+
+                if has_sret {
+                    let kind_id = inkwell::attributes::Attribute::get_named_enum_kind_id("sret");
+                    let type_attribute = self.context.create_type_attribute(
+                        kind_id,
+                        self.gen_type(return_type).as_any_type_enum(),
+                    );
+                    fn_value.add_attribute(inkwell::attributes::AttributeLoc::Param(0), type_attribute);
+                }
+
+                fn_value
             } else {
                 self.module.add_function(
                     &fun_name,
                     self.context.void_type().fn_type(&parameters, false),
-                    None,
+                    linkage,
                 )
             }
         })
@@ -291,10 +395,11 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
             &self.file
         };
 
-        let struct_name = format!("{}.{}", file.id(), file.lexeme(&struct_decl.ident.span));
-
+        let struct_name = file.lexeme(&struct_decl.ident.span).to_string();
+        
         let struct_type = ast::StructType {
             name: struct_name.clone(),
+            file_id: file.id(),
             members: struct_decl
                 .members
                 .iter()
@@ -303,7 +408,7 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
         };
 
         self.module
-            .get_struct_type(&struct_name)
+            .get_struct_type(&format!("{}.{}", &file.id(), &struct_name))
             .expect("internal-error: did not predeclare struct type")
             .set_body(
                 &struct_decl
@@ -377,7 +482,18 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                 self.function_retval = Some(self.builder.build_alloca(self.gen_type(ret_type), ""));
             }
 
-            for (i, param) in func_decl.get_param_iter().enumerate() {
+            let has_sret = func_decl.get_enum_attribute(
+                inkwell::attributes::AttributeLoc::Param(0),
+                inkwell::attributes::Attribute::get_named_enum_kind_id("sret")
+            ).is_some();
+            for (mut i, param) in func_decl.get_param_iter().enumerate() {
+                if has_sret {
+                    if i == 0 {
+                        continue;
+                    } else {
+                        i -= 1;
+                    }
+                }
                 self.namespace.insert(
                     if func.target_type.is_some() && i == 0 {
                         "self".to_string()
@@ -395,9 +511,17 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
 
             self.builder.position_at_end(retblock);
             if func.return_type.is_some() {
-                self.builder.build_return(Some(
-                    &self.builder.build_load(self.function_retval.unwrap(), ""),
-                ));
+                if has_sret {
+                    self.builder.build_store(
+                        func_decl.get_first_param().unwrap().into_pointer_value(),
+                        self.builder.build_load(self.function_retval.unwrap(), ""),
+                    );
+                    self.builder.build_return(None);
+                } else {
+                    self.builder.build_return(Some(
+                        &self.builder.build_load(self.function_retval.unwrap(), ""),
+                    ));
+                }
             } else {
                 self.builder.build_return(None);
             }
@@ -509,7 +633,6 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                     };
 
                     let target_value = self.gen_expr(&*unary_expr.expr, false);
-                    dbg!(&expr_type.kind);
                     let copied = self.builder.build_call(
                         self.module.get_function(&copy_func_name).unwrap(),
                         &vec![target_value.into()],
@@ -963,11 +1086,25 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                         panic!("internal-error: uncaught undefined function")
                     };
 
-                    let genned_args = call_expr
+                    let mut genned_args = call_expr
                         .args
                         .iter()
                         .map(|expr| self.gen_expr_as_ptr(expr).into())
                         .collect::<Vec<_>>();
+
+                    if let Some(return_type) = &expr.typ {
+                        dbg!(&return_type.kind);
+                        match &return_type.kind {
+                            ast::TypeKind::Struct(_) | ast::TypeKind::Arr(_) => {
+                                // C ABI: Struct returns are implemented as pointer first arg instead of an actual return
+                                let struct_return_value = self.builder.build_alloca(self.gen_type(return_type), "");
+                                genned_args.insert(0, struct_return_value.into());
+                                self.builder.build_call(func, &genned_args, "");
+                                return self.builder.build_load(struct_return_value, "");
+                            }
+                            _ => {}
+                        }
+                    }
 
                     if let Either::Left(value) = self
                         .builder
@@ -1003,11 +1140,25 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                                         ))
                                         .unwrap();
 
-                                    let genned_args = call_expr
+                                    let mut genned_args = call_expr
                                         .args
                                         .iter()
                                         .map(|expr| self.gen_expr_as_ptr(expr).into())
                                         .collect::<Vec<_>>();
+                                        
+                                    if let Some(return_type) = &expr.typ {
+                                        dbg!(&return_type.kind);
+                                        match &return_type.kind {
+                                            ast::TypeKind::Struct(_) | ast::TypeKind::Arr(_) => {
+                                                // C ABI: Struct returns are implemented as pointer first arg instead of an actual return
+                                                let struct_return_value = self.builder.build_alloca(self.gen_type(return_type), "");
+                                                genned_args.insert(0, struct_return_value.into());
+                                                self.builder.build_call(func, &genned_args, "");
+                                                return self.builder.build_load(struct_return_value, "");
+                                            }
+                                            _ => {}
+                                        }
+                                    }
 
                                     return if let Either::Left(value) = self
                                         .builder
@@ -1028,13 +1179,9 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                             let type_name = if let ast::TypeKind::Struct(struct_type) =
                                 &binary_expr.left.typ.as_ref().unwrap().kind
                             {
-                                struct_type.name.clone()
+                                format!("{}.{}", &struct_type.file_id, &struct_type.name)
                             } else {
-                                format!(
-                                    "{}.{}",
-                                    self.file.id(),
-                                    binary_expr.left.typ.as_ref().unwrap().kind.type_name()
-                                )
+                                binary_expr.left.typ.as_ref().unwrap().kind.type_name().to_string()
                             };
                             if let Some(func) = self.module.get_function(&format!(
                                 "{}.{}",
@@ -1047,6 +1194,20 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                                     .map(|expr| self.gen_expr_as_ptr(expr).into())
                                     .collect::<Vec<_>>();
                                 genned_args.insert(0, target_ptr.into());
+
+                                if let Some(return_type) = &expr.typ {
+                                    dbg!(&return_type.kind);
+                                    match &return_type.kind {
+                                        ast::TypeKind::Struct(_) | ast::TypeKind::Arr(_) => {
+                                            // C ABI: Struct returns are implemented as pointer first arg instead of an actual return
+                                            let struct_return_value = self.builder.build_alloca(self.gen_type(return_type), "");
+                                            genned_args.insert(0, struct_return_value.into());
+                                            self.builder.build_call(func, &genned_args, "");
+                                            return self.builder.build_load(struct_return_value, "");
+                                        }
+                                        _ => {}
+                                    }
+                                }
 
                                 if let Either::Left(value) = self
                                     .builder
@@ -1085,9 +1246,7 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                 }
 
                 let struct_alloca = self.builder.build_alloca(struct_type, "");
-                dbg!(&struct_alloca);
                 for (i, init) in genned_inits.iter().enumerate() {
-                    dbg!(i);
                     self.builder.build_store(
                         unsafe {
                             self.builder.build_gep(
@@ -1179,22 +1338,34 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                     .const_float(self.file.lexeme(&lit.token.span).parse::<f64>().unwrap())
                     .into(),
                 token::TokenKind::String => {
+                    let str_len = (self.file.lexeme(&lit.token.span).len() as u64)-2;
+                    let str_bytes = &self.file.lexeme(&lit.token.span).as_bytes()[1..=str_len as usize];
+
                     let global_str = self.module.add_global(
                         self.context
                             .i8_type()
-                            .array_type(self.file.lexeme(&lit.token.span).len() as u32),
+                            .array_type(str_len as u32),
                         Some(AddressSpace::Const),
                         "",
                     );
                     global_str.set_initializer(
                         &self
                             .context
-                            .const_string(self.file.lexeme(&lit.token.span).as_bytes(), false),
+                            .const_string(str_bytes, false),
                     );
 
-                    // SAFETY: Building a GEP is unsafe if the provided indices are incorrect. In this
-                    // case that is not an issue since we're using `i32 0` as both the indices.
-                    unsafe {
+                    let ptr = self.builder.build_array_malloc(
+                        self.context.i8_type(),
+                        self.context.i64_type().const_int(
+                            str_len,
+                            false
+                        ),
+                        ""
+                    ).unwrap();
+
+                    let global_str_ptr = unsafe {
+                        // SAFETY: Building a GEP is unsafe if the provided indices are incorrect. In this
+                        // case that is not an issue since we're using `i32 0` as both the indices.
                         self.builder
                             .build_in_bounds_gep(
                                 global_str.as_pointer_value(),
@@ -1205,7 +1376,36 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                                 "",
                             )
                             .into()
-                    }
+                    };
+
+                    self.builder.build_memcpy(
+                        ptr,
+                        4,
+                        global_str_ptr,
+                        4,
+                        self.context.i64_type().const_int(str_len, false),
+                    ).unwrap();
+
+                    let struct_type = self.gen_type(&ast::Type {
+                        span: 0..0,
+                        kind: ast::ArrType{
+                            eltype: Box::new(ast::Type {
+                                span: 0..0,
+                                kind: ast::PrimType::UInt(8).into()
+                            }),
+                        }.into()
+                    }).into_struct_type();
+
+                    let struct_alloca = self.builder.build_alloca(struct_type, "");
+                    
+                    let buf_ptr = self.builder.build_struct_gep(struct_alloca, 0, "").unwrap();
+                    let len_ptr = self.builder.build_struct_gep(struct_alloca, 1, "").unwrap();
+                    let cap_ptr = self.builder.build_struct_gep(struct_alloca, 2, "").unwrap();
+                    self.builder.build_store(buf_ptr, ptr);
+                    self.builder.build_store(len_ptr, self.context.i64_type().const_int(str_len, false));
+                    self.builder.build_store(cap_ptr, self.context.i64_type().const_int(str_len, false));
+                    
+                    self.builder.build_load(struct_alloca, "")
                 }
                 token::TokenKind::True => self.context.bool_type().const_int(1, false).into(),
                 token::TokenKind::False => self.context.bool_type().const_int(0, false).into(),
@@ -1217,8 +1417,6 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
         };
 
         if let Some(expr_type) = &expr.typ {
-            println!("");
-            dbg!(expr_type, &expr.kind, expr.kind.is_lvalue(), expr_type.kind.is_copyable() , has_owner);
             if !expr.kind.is_lvalue() && !expr_type.kind.is_copyable() && !has_owner {
                 let prev_block = self.current_function.unwrap().get_last_basic_block().unwrap();
     
@@ -1390,7 +1588,6 @@ pub fn gen_modules<'ctx>(context: &'ctx Context, file: &ast::File) -> Vec<Module
     modules.push(gen_module(context, ".main", file));
     for (dep_name, dep_file) in &analyzer::get_deps(&file).unwrap() {
         let module = gen_module(context, dep_name, dep_file);
-        dbg!("{}", module.print_to_string().to_string());
         modules.push(module);
     }
 

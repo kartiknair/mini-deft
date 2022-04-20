@@ -1,0 +1,12 @@
+struct Vector2d {
+    x f64
+    y f64
+}
+
+fun foo() [u8] {
+    return [1 as u8, 2 as u8, 3 as u8]
+}
+
+fun main() {
+    var v1 = foo()
+}

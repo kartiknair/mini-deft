@@ -1,0 +1,6 @@
+import "std.dft"
+
+fun main() {
+    var time = std.datetime()
+    std.println(time.to_string())
+}

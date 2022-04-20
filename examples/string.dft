@@ -1,0 +1,11 @@
+extern fun println_c(str [u8])
+extern fun read_file_c(path [u8]) [u8]
+extern fun timestamp_to_string_c(timestamp i64) [u8]
+
+fun main() {
+    var path = "examples/testing-std/main.dft"
+    println_c(path)
+    var contents = read_file_c(path)
+    println_c(contents)
+    println_c(timestamp_to_string_c(0))
+}

@@ -31,6 +31,7 @@ pub struct FunType {
 #[derive(Debug, Clone)]
 pub struct StructType {
     pub name: String,
+    pub file_id: String,
     pub members: Vec<(String, Type)>,
 }
 

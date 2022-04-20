@@ -1,4 +1,4 @@
-extern fun print_f64(n f64)
+extern fun println_f64(n f64)
 
 struct Point {
     x f64
@@ -6,10 +6,20 @@ struct Point {
 }
 
 fun print_x(p Point) {
-    print_f64(p.x)
+    println_f64(p.x)
+}
+
+fun point(x f64, y f64) Point {
+    return Point{x: x, y: y}
+}
+
+fun arr(a f64, b f64, c f64) [f64] {
+    return [a, b, c]
 }
 
 fun main() {
-    var p1 = Point{x: 45.67, y: 32.98}
+    var p1 = point(45.67, 32.98)
     print_x(p1)
+    var a = arr(p1.x, p1.y, 23.19)
+    println_f64(a[2])
 }

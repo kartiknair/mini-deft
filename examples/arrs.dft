@@ -1,9 +1,14 @@
 extern fun println_i32(n i32)
 
+fun create_arr(a i32, b i32, c i32) [i32] {
+    return [a, b, c]
+}
+
+fun print_arr_i32(arr [i32]) {
+    println_i32(arr[0])    
+}
+
 fun main() {
-    var a1 = [1, 2, 3]
-    var a2 = copy a1
-    
-    println_i32(a1[0])
-    println_i32(a2[0])
+    var a1 = create_arr(1, 2, 3)
+    print_arr_i32(a1)
 }
