@@ -1231,7 +1231,129 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                     panic!("internal-error: can only call variable & get expressions")
                 }
             }
-            ast::ExprKind::As(_) => todo!(),
+            ast::ExprKind::As(as_expr) => {
+                let genned_expr = self.gen_expr(&as_expr.expr, false);
+
+                if let ast::TypeKind::Prim(target_prim_type) = &as_expr.typ.kind {
+                    if let ast::TypeKind::Prim(expr_prim_type) = &as_expr.expr.typ.as_ref().unwrap().kind {
+                        match (expr_prim_type, target_prim_type) {
+                            (ast::PrimType::UInt(expr_bit_size), ast::PrimType::UInt(target_bit_size))
+                            | (ast::PrimType::Int(expr_bit_size), ast::PrimType::UInt(target_bit_size)) => {
+                                if expr_bit_size < target_bit_size {
+                                    self.builder.build_int_z_extend(
+                                        genned_expr.into_int_value(),
+                                        self.context.custom_width_int_type(*target_bit_size as u32),
+                                        ""
+                                    ).into()
+                                } else if expr_bit_size < target_bit_size {
+                                    self.builder.build_int_truncate(
+                                        genned_expr.into_int_value(),
+                                        self.context.custom_width_int_type(*target_bit_size as u32),
+                                        ""
+                                    ).into()
+                                } else {
+                                    if expr_prim_type != target_prim_type {
+                                        // If going from uX to iX or iX to uX. This is handled naturally since LLVM only has generic "int" types
+                                        genned_expr
+                                    } else {
+                                        unreachable!()
+                                    }
+                                }
+                            }
+                            (ast::PrimType::Int(expr_bit_size), ast::PrimType::Int(target_bit_size))
+                            | (ast::PrimType::UInt(expr_bit_size), ast::PrimType::Int(target_bit_size)) => {
+                                if expr_bit_size < target_bit_size {
+                                    self.builder.build_int_s_extend(
+                                        genned_expr.into_int_value(),
+                                        self.context.custom_width_int_type(*target_bit_size as u32),
+                                        ""
+                                    ).into()
+                                } else if expr_bit_size < target_bit_size {
+                                    self.builder.build_int_truncate(
+                                        genned_expr.into_int_value(),
+                                        self.context.custom_width_int_type(*target_bit_size as u32),
+                                        ""
+                                    ).into()
+                                } else {
+                                    if expr_prim_type != target_prim_type {
+                                        genned_expr
+                                    } else {
+                                        unreachable!()
+                                    }
+                                }
+                            }
+
+                            (ast::PrimType::Float(expr_bit_size), ast::PrimType::Float(target_bit_size)) => {
+                                if expr_bit_size < target_bit_size {
+                                    self.builder.build_float_ext(
+                                        genned_expr.into_float_value(),
+                                        self.context.f64_type(),
+                                        ""
+                                    ).into()
+                                } else if expr_bit_size < target_bit_size {
+                                    self.builder.build_float_trunc(
+                                        genned_expr.into_float_value(),
+                                        self.context.f32_type(),
+                                        ""
+                                    ).into()
+                                } else {
+                                    unreachable!()
+                                }
+                            },
+
+                            (ast::PrimType::Float(_), ast::PrimType::Int(target_bit_size)) => {
+                                self.builder.build_float_to_signed_int(
+                                    genned_expr.into_float_value(),
+                                    self.context.custom_width_int_type(*target_bit_size as u32),
+                                    ""
+                                ).into()
+                            }
+                            (ast::PrimType::Float(_), ast::PrimType::UInt(target_bit_size)) => {
+                                self.builder.build_float_to_unsigned_int(
+                                    genned_expr.into_float_value(),
+                                    self.context.custom_width_int_type(*target_bit_size as u32),
+                                    ""
+                                ).into()
+                            }
+                            (ast::PrimType::Int(_), ast::PrimType::Float(target_bit_size)) => {
+                                self.builder.build_signed_int_to_float(
+                                    genned_expr.into_int_value(),
+                                    if *target_bit_size == 32 {
+                                        self.context.f32_type()
+                                    } else {
+                                        self.context.f64_type()
+                                    },
+                                    ""
+                                ).into()
+                            }
+                            (ast::PrimType::UInt(_), ast::PrimType::Float(target_bit_size)) => {
+                                self.builder.build_unsigned_int_to_float(
+                                    genned_expr.into_int_value(),
+                                    if *target_bit_size == 32 {
+                                        self.context.f32_type()
+                                    } else {
+                                        self.context.f64_type()
+                                    },
+                                    ""
+                                ).into()
+                            }
+
+                            // Rather than have an `_` this makes it clear we're only ignoring the `bool` options
+                            (ast::PrimType::Int(_), ast::PrimType::Bool) => unreachable!(),
+                            (ast::PrimType::UInt(_), ast::PrimType::Bool) => unreachable!(),
+                            (ast::PrimType::Float(_), ast::PrimType::Bool) => unreachable!(),
+                            (ast::PrimType::Bool, ast::PrimType::Int(_)) => unreachable!(),
+                            (ast::PrimType::Bool, ast::PrimType::UInt(_)) => unreachable!(),
+                            (ast::PrimType::Bool, ast::PrimType::Float(_)) => unreachable!(),
+                            (ast::PrimType::Bool, ast::PrimType::Bool) => unreachable!(),
+                        }
+                    } else {
+                        unreachable!()
+                    }
+                } else {
+                    unreachable!()
+                }
+            },
             ast::ExprKind::Idx(idx_expr) => {
                 let ptr_to_el = self.gen_ptr_to_arr_el(idx_expr);
                 self.builder.build_load(ptr_to_el, "")

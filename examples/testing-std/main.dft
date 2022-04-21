@@ -3,4 +3,11 @@ import "std.dft"
 fun main() {
     var time = std.datetime()
     std.println(time.to_string())
+
+    var n1 = -42
+    var n2 = n1 as f32
+    var n3 = n1 as i64
+    std.println(n1.to_string())
+    std.println(n2.to_string())
+    std.println(n3.to_string())
 }

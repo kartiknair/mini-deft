@@ -32,41 +32,41 @@ export fun to_string() [u8] for Datetime {
     return timestamp_to_string_c(self.epoch)
 }
 
-// export fun to_string() [u8] for i8 {
-//     return i64_to_string_c(self as i64)
-// }
+export fun to_string() [u8] for i8 {
+    return i64_to_string_c(self as i64)
+}
 
-// export fun to_string() [u8] for i16 {
-//     return i64_to_string_c(self as i64)
-// }
+export fun to_string() [u8] for i16 {
+    return i64_to_string_c(self as i64)
+}
 
-// export fun to_string() [u8] for i32 {
-//     return i64_to_string_c(self as i64)
-// }
+export fun to_string() [u8] for i32 {
+    return i64_to_string_c(self as i64)
+}
 
 export fun to_string() [u8] for i64 {
     return i64_to_string_c(self)
 }
 
-// export fun to_string() [u8] for u8 {
-//     return u64_to_string_c(self as u64)
-// }
+export fun to_string() [u8] for u8 {
+    return u64_to_string_c(self as u64)
+}
 
-// export fun to_string() [u8] for u16 {
-//     return u64_to_string_c(self as u64)
-// }
+export fun to_string() [u8] for u16 {
+    return u64_to_string_c(self as u64)
+}
 
-// export fun to_string() [u8] for u32 {
-//     return u64_to_string_c(self as u64)
-// }
+export fun to_string() [u8] for u32 {
+    return u64_to_string_c(self as u64)
+}
 
 export fun to_string() [u8] for u64 {
     return u64_to_string_c(self)
 }
 
-// export fun to_string() [u8] for f32 {
-//     return f64_to_string_c(self as f64)
-// }
+export fun to_string() [u8] for f32 {
+    return f64_to_string_c(self as f64)
+}
 
 export fun to_string() [u8] for f64 {
     return f64_to_string_c(self)

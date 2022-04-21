@@ -940,7 +940,7 @@ impl<'a> Analyzer<'a> {
                         }
                     } else {
                         return Err(Error {
-                            message: "can only cast numeric primitives or sum type values".into(),
+                            message: "can only cast numeric primitive values".into(),
                             span: as_expr.expr.span.clone(),
                             file: None,
                         });
