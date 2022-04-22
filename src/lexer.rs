@@ -1,3 +1,5 @@
+use unicode_xid::UnicodeXID;
+
 use crate::{
     common::{Error, Span},
     token::{Token, TokenKind},
@@ -104,7 +106,7 @@ impl Lexer {
     }
 
     fn lex_ident(&mut self) -> Result<Token, Error> {
-        while !self.at_end() && (self.peek()?.is_alphanumeric() || self.peek()? == '_') {
+        while !self.at_end() && self.peek()?.is_xid_continue() {
             self.advance();
         }
 
@@ -246,7 +248,7 @@ impl Lexer {
             _ => {
                 if c.is_digit(10) {
                     Ok(Some(self.lex_number()?))
-                } else if c.is_alphabetic() {
+                } else if c.is_xid_start() {
                     Ok(Some(self.lex_ident()?))
                 } else {
                     Err(Error {

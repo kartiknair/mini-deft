@@ -13,3 +13,4 @@ ariadne = "0.1.3"
 inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "master", features = ["llvm12-0"] }
 either = "*"
 seahorse = "1.1"
+unicode-xid = "0.2.2"

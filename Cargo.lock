@@ -53,6 +53,7 @@ dependencies = [
  "either",
  "inkwell",
  "seahorse",
+ "unicode-xid",
 ]
 
 [[package]]
