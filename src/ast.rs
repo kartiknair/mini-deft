@@ -110,6 +110,7 @@ pub struct FunDecl {
     pub exported: bool,
     pub external: bool,
     pub ident: token::Token,
+    pub template_params: Vec<token::Token>,
     pub parameters: Vec<(token::Token, Type)>,
     pub return_type: Option<Type>,
     pub target_type: Option<Type>,
@@ -120,6 +121,7 @@ pub struct FunDecl {
 pub struct StructDecl {
     pub exported: bool,
     pub ident: token::Token,
+    // pub template_params: Vec<token::Token>,
     pub members: Vec<(token::Token, Type)>,
 }
 
@@ -212,6 +214,7 @@ pub struct VarExpr {
 #[derive(Debug, Clone)]
 pub struct CallExpr {
     pub callee: Box<Expr>,
+    pub template_inits: Vec<Type>,
     pub args: Vec<Expr>,
 }
 
@@ -224,6 +227,7 @@ pub struct AsExpr {
 #[derive(Debug, Clone)]
 pub struct StructLit {
     pub typ: Type,
+    // pub template_inits: Vec<Type>,
     pub inits: Vec<(token::Token, Expr)>,
 }
 

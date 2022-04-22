@@ -37,6 +37,8 @@ struct Analyzer<'a> {
     typespace: HashMap<String, TypeInfo>,
     imports: HashMap<String, ast::File>,
 
+    template_funs: HashMap<String, ast::FunDecl>,
+
     within_function: Option<ast::FunDecl>,
 }
 
@@ -97,6 +99,8 @@ impl<'a> Analyzer<'a> {
             namespace: HashMap::new(),
             typespace,
             imports: HashMap::new(),
+
+            template_funs: HashMap::new(),
 
             within_function: None,
         }
@@ -194,6 +198,167 @@ impl<'a> Analyzer<'a> {
         )
     }
 
+    fn analyze_template_fun(
+        &mut self,
+        fun_decl: &mut ast::FunDecl,
+        template_inits: &[ast::Type],
+    ) -> Result<(), Error> {
+        let mut shadowed_types = HashMap::new();
+        for (i, template_param) in fun_decl.template_params.iter().enumerate() {
+            if let Some(old_value) = self.typespace.insert(
+                self.file.lexeme(&template_param.span).to_string(),
+                TypeInfo {
+                    kind: template_inits[i].kind.clone(),
+                    methods: HashMap::new(),
+                    public: false,
+                },
+            ) {
+                shadowed_types.insert(
+                    self.file.lexeme(&template_param.span).to_string(),
+                    old_value,
+                );
+            }
+        }
+
+        dbg!(&self.typespace);
+
+        let function_name = self.file.lexeme(&fun_decl.ident.span);
+
+        if let Some(return_type) = &mut fun_decl.return_type {
+            if let ast::TypeKind::Named(named_type) = &return_type.kind {
+                if fun_decl
+                    .template_params
+                    .iter()
+                    .find(|token| {
+                        self.file.lexeme(&named_type.name.span) == self.file.lexeme(&token.span)
+                    })
+                    .is_some()
+                {
+                    return_type.kind = self
+                        .typespace
+                        .get(self.file.lexeme(&named_type.name.span))
+                        .unwrap()
+                        .kind
+                        .clone();
+                }
+            }
+        }
+
+        let mut shadowed = HashMap::new();
+        for param in fun_decl.parameters.iter_mut() {
+            if fun_decl
+                .template_params
+                .iter()
+                .find(|token| self.file.lexeme(&param.1.span) == self.file.lexeme(&token.span))
+                .is_some()
+            {
+                param.1.kind = self
+                    .typespace
+                    .get(self.file.lexeme(&param.1.span))
+                    .unwrap()
+                    .kind
+                    .clone();
+            }
+
+            if let Some(old_value) = self
+                .namespace
+                .insert(self.file.lexeme(&param.0.span).to_string(), param.1.clone())
+            {
+                shadowed.insert(self.file.lexeme(&param.0.span).to_string(), old_value);
+            }
+        }
+
+        if let Some(target_type) = &mut fun_decl.target_type {
+            if let ast::TypeKind::Named(named_type) = &target_type.kind {
+                let type_name = self.name_from_named_type(None, named_type);
+                let resolved_type_info = match self.typespace.get_mut(&type_name) {
+                    Some(typ_info) => typ_info,
+                    None => {
+                        return Err(Error {
+                            span: target_type.span.clone(),
+                            message: format!("undefined type: '{}'", type_name),
+                            file: None,
+                        });
+                    }
+                };
+
+                resolved_type_info.methods.insert(
+                    function_name.to_string(),
+                    ast::FunType {
+                        parameters: fun_decl
+                            .parameters
+                            .iter()
+                            .map(|(_, typ)| typ.clone())
+                            .collect(),
+                        returns: fun_decl
+                            .return_type
+                            .as_ref()
+                            .map(|return_type| Box::new(return_type.clone())),
+                    },
+                );
+
+                self.analyze_type(target_type)?;
+                self.namespace
+                    .insert("self".to_string(), target_type.clone());
+            } else {
+                return Err(Error{
+                    span: target_type.span.clone(),
+                    message: "methods can only be defined on named types. consider introducing a new type".to_string(),
+                    file: None,
+                });
+            }
+        } else {
+            let fun_type = ast::Type {
+                span: 0..0,
+                kind: ast::TypeKind::Fun(ast::FunType {
+                    parameters: fun_decl
+                        .parameters
+                        .iter()
+                        .map(|(_, typ)| typ.clone())
+                        .collect(),
+                    returns: fun_decl
+                        .return_type
+                        .as_ref()
+                        .map(|return_type| Box::new(return_type.clone())),
+                }),
+            };
+            dbg!(&fun_type);
+            self.namespace.insert(function_name.to_string(), fun_type);
+        }
+
+        let callee_fun = self.within_function.clone();
+        self.within_function = Some(fun_decl.clone());
+
+        if let Some(block) = &mut fun_decl.block {
+            for stmt in block.stmts.iter_mut() {
+                self.analyze_stmt(stmt)?;
+            }
+        } else if !fun_decl.external {
+            return Err(fun_decl
+                .ident
+                .error_at("missing block in function declaration"));
+        }
+
+        for param in &fun_decl.parameters {
+            self.namespace.remove(self.file.lexeme(&param.0.span));
+        }
+        for (name, typ) in shadowed {
+            self.namespace.insert(name, typ);
+        }
+
+        for template_param in &fun_decl.template_params {
+            self.typespace
+                .remove(self.file.lexeme(&template_param.span));
+        }
+        for (name, typ) in shadowed_types {
+            self.typespace.insert(name, typ);
+        }
+
+        self.within_function = callee_fun;
+
+        Ok(())
+    }
+
     fn analyze_stmt(&mut self, stmt: &mut ast::Stmt) -> Result<(), Error> {
         match &mut stmt.kind {
             ast::StmtKind::Import(_) => {
@@ -207,14 +372,45 @@ impl<'a> Analyzer<'a> {
                 }
 
                 let function_name = self.file.lexeme(&fun_decl.ident.span);
-                self.within_function = Some(fun_decl.clone());
 
+                let mut had_template_type_in_signature = false;
                 if let Some(return_type) = &mut fun_decl.return_type {
-                    self.analyze_type(return_type)?;
+                    if let ast::TypeKind::Named(named_type) = &return_type.kind {
+                        if fun_decl
+                            .template_params
+                            .iter()
+                            .find(|token| {
+                                self.file.lexeme(&named_type.name.span)
+                                    == self.file.lexeme(&token.span)
+                            })
+                            .is_none()
+                        {
+                            self.analyze_type(return_type)?;
+                        } else {
+                            // Ignore analyzing template types
+                            had_template_type_in_signature = true;
+                        }
+                    } else {
+                        self.analyze_type(return_type)?;
+                    }
                 }
 
                 let mut shadowed = HashMap::new();
                 for param in fun_decl.parameters.iter_mut() {
+                    if fun_decl
+                        .template_params
+                        .iter()
+                        .find(|token| {
+                            self.file.lexeme(&param.1.span) == self.file.lexeme(&token.span)
+                        })
+                        .is_some()
+                    {
+                        // Ignore analyzing template types
+                        had_template_type_in_signature = true;
+                        println!("skipped analyzing: {}", self.file.lexeme(&param.1.span));
+                        continue;
+                    }
+
                     if let ast::TypeKind::Named(named_type) = &param.1.kind {
                         if let Some(typ_info) = self
                             .typespace
@@ -238,11 +434,13 @@ impl<'a> Analyzer<'a> {
                         return Err(param.0.error_at("parameter name cannot be `self`"));
                     }
 
-                    if let Some(old_value) = self
-                        .namespace
-                        .insert(self.file.lexeme(&param.0.span).to_string(), param.1.clone())
-                    {
-                        shadowed.insert(self.file.lexeme(&param.0.span).to_string(), old_value);
+                    if fun_decl.template_params.is_empty() {
+                        if let Some(old_value) = self
+                            .namespace
+                            .insert(self.file.lexeme(&param.0.span).to_string(), param.1.clone())
+                        {
+                            shadowed.insert(self.file.lexeme(&param.0.span).to_string(), old_value);
+                        }
                     }
                 }
 
@@ -285,7 +483,7 @@ impl<'a> Analyzer<'a> {
                             file: None,
                         });
                     }
-                } else {
+                } else if fun_decl.template_params.is_empty() {
                     self.namespace.insert(
                         function_name.to_string(),
                         ast::Type {
@@ -303,6 +501,19 @@ impl<'a> Analyzer<'a> {
                             }),
                         },
                     );
+                }
+
+                if !fun_decl.template_params.is_empty() {
+                    if !had_template_type_in_signature {
+                        return Err(fun_decl.ident.error_at(
+                            "template function must use template types within function signature",
+                        ));
+                    }
+
+                    // Don't analyze body
+                    self.template_funs
+                        .insert(function_name.to_string(), fun_decl.clone());
+                    return Ok(());
                 }
 
                 self.within_function = Some(fun_decl.clone());
@@ -852,6 +1063,13 @@ impl<'a> Analyzer<'a> {
                                     }
                                     _ => unreachable!(),
                                 }
+                            } else {
+                                return Err(Error {
+                                    message: "binary expressions are only valid on primitive types"
+                                        .into(),
+                                    span: expr.span.clone(),
+                                    file: None,
+                                });
                             }
                         }
                     } else {
@@ -876,6 +1094,36 @@ impl<'a> Analyzer<'a> {
                 }
             }
             ast::ExprKind::Call(call_expr) => {
+                if let ast::ExprKind::Var(var_expr) = &call_expr.callee.kind {
+                    let fun_decl = if let Some(fun_decl) = self
+                        .template_funs
+                        .get(self.file.lexeme(&var_expr.ident.span))
+                    {
+                        Some(fun_decl.clone())
+                    } else {
+                        None
+                    };
+
+                    if let Some(mut fun_decl) = fun_decl {
+                        if call_expr.template_inits.len() != fun_decl.template_params.len() {
+                            return Err(Error {
+                                span: call_expr.callee.span.clone(),
+                                message: "template types must be manually initialized. inference has not been implemented".to_string(),
+                                file: None,
+                            });
+                        }
+
+                        for init_type in call_expr.template_inits.iter_mut() {
+                            self.analyze_type(init_type)?;
+                            dbg!(init_type);
+                        }
+
+                        self.analyze_template_fun(&mut fun_decl, &call_expr.template_inits)?;
+                    }
+                } else {
+                    self.analyze_expr(&mut call_expr.callee)?;
+                }
+
                 self.analyze_expr(&mut call_expr.callee)?;
                 for arg in call_expr.args.iter_mut() {
                     self.analyze_expr(arg)?;
@@ -883,13 +1131,18 @@ impl<'a> Analyzer<'a> {
 
                 if let Some(callee_type) = &call_expr.callee.typ {
                     if let ast::TypeKind::Fun(fun_type) = &callee_type.kind {
+                        dbg!(fun_type);
                         // Validate arguments
                         for (i, arg) in call_expr.args.iter().enumerate() {
                             if arg.typ.is_some() {
                                 let param_type = &fun_type.parameters[i];
                                 if !self.is_assignable(arg, param_type, true)? {
                                     return Err(Error {
-                                        message: "invalid argument type".into(),
+                                        message: format!(
+                                            "invalid argument type. expected value of type {:#?}, value was of type {:#?}",
+                                            param_type.kind,
+                                            arg.typ,
+                                        ),
                                         span: arg.span.clone(),
                                         file: None,
                                     });

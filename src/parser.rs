@@ -351,7 +351,29 @@ impl<'a> Parser<'a> {
                     self.current += 1;
 
                     let mut args = Vec::new();
+                    let mut template_inits = Vec::new();
                     if self.peek()?.kind != TokenKind::RightParen {
+                        if self.peek()?.kind == TokenKind::Lesser {
+                            self.current += 1;
+
+                            while self.peek()?.kind != TokenKind::Greater {
+                                template_inits.push(self.parse_type()?);
+
+                                if self.peek()?.kind == TokenKind::Comma {
+                                    self.current += 1;
+                                }
+                            }
+
+                            self.expect(
+                                TokenKind::Greater,
+                                "expect closing '>' after template parameters",
+                            )?;
+
+                            if self.peek()?.kind == TokenKind::Comma {
+                                self.current += 1;
+                            }
+                        }
+
                         while self.peek()?.kind != TokenKind::RightParen {
                             args.push(self.parse_expr()?);
 
@@ -370,6 +392,7 @@ impl<'a> Parser<'a> {
                         span: expr.span.start..rparen_token.span.end,
                         kind: ast::CallExpr {
                             callee: Box::new(expr),
+                            template_inits,
                             args,
                         }
                         .into(),
@@ -475,7 +498,25 @@ impl<'a> Parser<'a> {
             self.current += 1;
 
             let mut inits = Vec::new();
+            // let mut template_inits = Vec::new();
             while self.peek()?.kind != TokenKind::RightBrace {
+                // if self.peek()?.kind == TokenKind::Lesser {
+                //     self.current += 1;
+
+                //     while self.peek()?.kind != TokenKind::Greater {
+                //         template_inits.push(self.parse_type()?);
+
+                //         if self.peek()?.kind == TokenKind::Comma {
+                //             self.current += 1;
+                //         }
+                //     }
+
+                //     self.expect(
+                //         TokenKind::Greater,
+                //         "expect closing '>' after template parameters",
+                //     )?;
+                // }
+
                 let init_ident = self
                     .expect(TokenKind::Ident, "expect initializer name")?
                     .clone();
@@ -494,7 +535,12 @@ impl<'a> Parser<'a> {
 
             Ok(ast::Expr {
                 span: typ.span.start..rbrace_token.span.end,
-                kind: ast::StructLit { typ, inits }.into(),
+                kind: ast::StructLit {
+                    typ,
+                    // template_inits,
+                    inits,
+                }
+                .into(),
                 typ: None,
             })
         } else {
@@ -569,9 +615,29 @@ impl<'a> Parser<'a> {
                     .expect(TokenKind::Ident, "expect function name")?
                     .clone();
 
+                let mut template_params = Vec::new();
+                if self.peek()?.kind == TokenKind::Lesser {
+                    self.current += 1;
+
+                    while self.peek()?.kind != TokenKind::Greater {
+                        template_params.push(
+                            self.expect(TokenKind::Ident, "expect template parameter name")?
+                                .clone(),
+                        );
+
+                        if self.peek()?.kind == TokenKind::Comma {
+                            self.current += 1;
+                        }
+                    }
+
+                    self.expect(
+                        TokenKind::Greater,
+                        "expect closing '>' after template parameters",
+                    )?;
+                }
+
                 let mut parameters = Vec::new();
                 self.expect(TokenKind::LeftParen, "expect '(' after function name")?;
-
                 if self.peek()?.kind != TokenKind::RightParen {
                     loop {
                         let param_ident = self
@@ -614,6 +680,7 @@ impl<'a> Parser<'a> {
                         exported: false,
                         external: false,
                         ident,
+                        template_params,
                         parameters,
                         return_type,
                         target_type,
@@ -626,12 +693,35 @@ impl<'a> Parser<'a> {
                 self.current += 1;
 
                 let ident = self.expect(TokenKind::Ident, "expect struct name")?.clone();
+
+                let mut members = Vec::new();
+                // let mut template_params = Vec::new();
+
+                // if self.peek()?.kind == TokenKind::Lesser {
+                //     self.current += 1;
+
+                //     while self.peek()?.kind != TokenKind::Greater {
+                //         template_params.push(
+                //             self.expect(TokenKind::Ident, "expect template parameter name")?
+                //                 .clone(),
+                //         );
+
+                //         if self.peek()?.kind == TokenKind::Comma {
+                //             self.current += 1;
+                //         }
+                //     }
+
+                //     self.expect(
+                //         TokenKind::Greater,
+                //         "expect closing '>' after template parameters",
+                //     )?;
+                // }
+
                 self.expect(TokenKind::LeftBrace, "expect struct body")?;
                 if self.peek()?.kind == TokenKind::RightBrace {
                     return Err(self.error_at_current("empty struct is illegal"));
                 }
 
-                let mut members = Vec::new();
                 while self.peek()?.kind != TokenKind::RightBrace {
                     let member_ident = self
                         .expect(TokenKind::Ident, "expect struct member name")?
@@ -651,6 +741,7 @@ impl<'a> Parser<'a> {
                     kind: ast::StmtKind::Struct(ast::StructDecl {
                         exported: false,
                         ident,
+                        // template_params,
                         members,
                     }),
                     pointer: token.span.clone(),

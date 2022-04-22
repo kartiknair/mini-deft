@@ -1,0 +1,12 @@
+extern fun println_i32(n i32)
+extern fun println_f64(n f64)
+
+fun add<T>(left T, right T) T {
+    return left + right
+}
+
+fun main() {
+    println_i32(add(<i32>, 34, 56))
+    println_f64(add(<f64>, 12.45, 89.4))
+    add(<[i32]>, [1, 2, 3], [4, 5, 6])
+}
