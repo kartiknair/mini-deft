@@ -286,3 +286,93 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Error> {
 
     Ok(tokens)
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn operators() {
+        let input = "+ - * / .";
+        let tokens = match super::lex(input) {
+            Ok(tokens) => tokens,
+            Err(_) => {
+                assert!(false);
+                unreachable!()
+            }
+        };
+
+        let actual_token_kinds = vec![
+            super::TokenKind::Plus,
+            super::TokenKind::Minus,
+            super::TokenKind::Star,
+            super::TokenKind::Slash,
+            super::TokenKind::Dot,
+            super::TokenKind::Eof,
+        ];
+
+        let mut all_token_kinds_same = true;
+        assert_eq!(tokens.len(), actual_token_kinds.len());
+
+        for (i, token) in tokens.iter().enumerate() {
+            if token.kind != actual_token_kinds[i] {
+                all_token_kinds_same = false;
+                break;
+            }
+        }
+
+        assert!(all_token_kinds_same);
+    }
+
+    #[test]
+    fn open_string_literal() {
+        let input = "var x = \"hello";
+        let tokens = super::lex(input);
+        assert!(tokens.is_err());
+    }
+
+    #[test]
+    fn unicode_xid() {
+        let input = r#"
+            фу
+            बार
+        "#;
+
+        let tokens = match super::lex(input) {
+            Ok(tokens) => tokens,
+            Err(_) => {
+                assert!(false);
+                unreachable!()
+            }
+        };
+
+        let actual_token_kinds = vec![
+            super::TokenKind::Ident,
+            super::TokenKind::Semicolon,
+            super::TokenKind::Ident,
+            super::TokenKind::Semicolon,
+            super::TokenKind::Eof,
+        ];
+
+        let mut all_token_kinds_same = true;
+        assert_eq!(tokens.len(), actual_token_kinds.len());
+
+        for (i, token) in tokens.iter().enumerate() {
+            if token.kind != actual_token_kinds[i] {
+                all_token_kinds_same = false;
+                break;
+            }
+        }
+
+        assert!(all_token_kinds_same);
+    }
+
+    #[test]
+    fn numbers() {
+        let input = r#"
+            42.56;
+            34.inc()
+        "#;
+        let tokens = super::lex(input);
+        dbg!(&tokens);
+        assert!(tokens.is_ok());
+    }
+}
