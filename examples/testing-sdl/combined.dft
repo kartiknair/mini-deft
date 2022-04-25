@@ -1,0 +1,122 @@
+import "../testing-std/std.dft"
+
+struct Window {
+    width u64
+    height u64
+    _sdl_window ~u8
+    _sdl_renderer ~u8
+}
+
+struct Event {
+    type u64
+    _sdl_event ~u8
+}
+
+struct Color {
+    r u8
+    g u8
+    b u8
+    a u8
+}
+
+extern fun rand() i32
+extern fun getchar() i32
+
+extern fun sdl_init_everything_c() i32
+extern fun sdl_wrapped_window_c(title [u8], width u64, height u64) Window
+extern fun sdl_destroy_window_c(window Window)
+
+extern fun sdl_window_clear_c(window Window)
+extern fun sdl_window_set_color_c(window Window, color Color)
+extern fun sdl_window_draw_point_c(window Window, x u64, y u64)
+extern fun sdl_window_draw_rect_c(window Window, x u64, y u64, width u64, height u64)
+extern fun sdl_window_present_c(window Window)
+
+extern fun sdl_blank_event_c() Event
+extern fun sdl_poll_event_c(event Event) i32
+extern fun sdl_destroy_event_c(event Event)
+
+fun sdl_init() bool {
+    return sdl_init_everything_c() == 0
+}
+
+fun sdl_window(title [u8], width u64, height u64) Window {
+    return sdl_wrapped_window_c(title, width, height)
+}
+
+fun drop() for Window {
+    sdl_destroy_window_c(self)
+}
+
+fun clear() for Window {
+    sdl_window_clear_c(self)
+}
+
+fun set_color(color Color) for Window {
+    sdl_window_set_color_c(self, color)
+}
+
+fun draw_point(x u64, y u64) for Window {
+    sdl_window_draw_point_c(self, x, y)
+}
+
+fun draw_rect(x u64, y u64, width u64, height u64) for Window {
+    sdl_window_draw_rect_c(self, x, y, width, height)
+}
+
+fun present() for Window {
+    sdl_window_present_c(self)
+}
+
+fun sdl_event() Event {
+    return sdl_blank_event_c()
+}
+
+fun poll() bool for Event {
+    return sdl_poll_event_c(self) == 0
+}
+
+fun drop() for Event {
+    sdl_destroy_event_c(self)
+}
+
+fun main() {
+    var width = 400 as u64
+    var height = 400 as u64
+
+    sdl_init()
+    var window = sdl_window("hello sdl", width, height)
+
+    var event = sdl_event()
+
+    var x = 0 as u64
+    var y = 0 as u64
+    var quit = false
+    while (!quit) {
+        while event.poll() {
+            if event.type == (256 as u64) {
+                std.println("exiting gracefully...")
+                return
+            }
+        }
+
+        window.clear()
+        window.set_color(Color{
+            r: 255 as u8,
+            g: 255 as u8,
+            b: 255 as u8,
+            a: 255 as u8,
+        })
+
+        x = x + (1 as u64) % width
+        y = y + (1 as u64) % height
+        window.draw_rect(x, y, 50 as u64, 50 as u64)
+        window.set_color(Color{
+            r: 0 as u8,
+            g: 0 as u8,
+            b: 0 as u8,
+            a: 255 as u8,
+        })
+        window.present()
+    }
+}

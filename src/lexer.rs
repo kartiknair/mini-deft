@@ -248,7 +248,7 @@ impl Lexer {
             _ => {
                 if c.is_digit(10) {
                     Ok(Some(self.lex_number()?))
-                } else if c.is_xid_start() {
+                } else if c.is_xid_start() || c == '_' {
                     Ok(Some(self.lex_ident()?))
                 } else {
                     Err(Error {

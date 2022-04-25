@@ -1,10 +1,13 @@
-extern fun println_i32(n i32)
+import "testing-std/std.dft"
 
-fun test() [i32] {
-    return [1, 2, 3]    
+struct Foo {
+    value i32
+}
+
+fun drop() for Foo {
+    std.print("dropping foo")
 }
 
 fun main() {
-    test()
-    println_i32(test()[2])
+    var f = Foo{value: 42}
 }

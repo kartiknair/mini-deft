@@ -66,6 +66,8 @@ fn llvm_modules_from_filename<'ctx>(filename: &str, context: &'ctx Context) -> V
         Err(err) => report_error_and_exit(err, &file.source, filename),
     };
 
+    dbg!(file.direct_deps.keys().into_iter().collect::<Vec<_>>());
+
     codegen::gen_modules(context, &file)
 }
 

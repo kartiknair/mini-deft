@@ -1,0 +1,12 @@
+import "testing-std/std.dft"
+
+fun modify(n i32) {
+    n = 42;
+}
+
+fun main() {
+    var n = 34;
+    std.println(n.to_string())
+    modify(n)
+    std.println(n.to_string())
+}

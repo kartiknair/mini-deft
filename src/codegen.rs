@@ -60,17 +60,13 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                             Some(Linkage::Private),
                         );
 
-                        let prev_block = if let Some(current_function) = self.current_function {
-                            current_function.get_last_basic_block()
-                        } else {
-                            None
-                        };
+                        let prev_block = self.builder.get_insert_block();
                         
                         let drop_func_block = self.context.append_basic_block(drop_func, "entry");
                         self.builder.position_at_end(drop_func_block);
                         if !box_type.eltype.kind.is_copyable() {
                             let nested_drop_func_name = if let ast::TypeKind::Struct(struct_type) = &box_type.eltype.kind {
-                                format!("{}.drop", struct_type.name)
+                                format!("{}.{}.drop", &struct_type.file_id, &struct_type.name)
                             } else {
                                 format!("{}.{}.drop", self.file.id(), box_type.eltype.kind.type_name())
                             };
@@ -111,11 +107,7 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                             Some(Linkage::Private),
                         );
 
-                        let prev_block = if let Some(current_function) = self.current_function {
-                            current_function.get_last_basic_block()
-                        } else {
-                            None
-                        };
+                        let prev_block = self.builder.get_insert_block();
                         
                         let copy_func_block = self.context.append_basic_block(copy_func, "entry");
                         self.builder.position_at_end(copy_func_block);
@@ -180,17 +172,13 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                             Some(Linkage::Private),
                         );
 
-                        let prev_block = if let Some(current_function) = self.current_function {
-                            current_function.get_last_basic_block()
-                        } else {
-                            None
-                        };
+                        let prev_block = self.builder.get_insert_block();
                         
                         let drop_func_block = self.context.append_basic_block(drop_func, "entry");
                         self.builder.position_at_end(drop_func_block);
                         if !arr_type.eltype.kind.is_copyable() {
                             let nested_drop_func_name = if let ast::TypeKind::Struct(struct_type) = &arr_type.eltype.kind {
-                                format!("{}.drop", struct_type.name)
+                                format!("{}.{}.drop", &struct_type.file_id, &struct_type.name)
                             } else {
                                 format!("{}.{}.drop", self.file.id(), arr_type.eltype.kind.type_name())
                             };
@@ -317,7 +305,17 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                 target_type.kind.type_name().to_string()
             };
 
-            format!("{}.{}", type_name, file.lexeme(&func.ident.span))
+            let fun_name = format!("{}.{}", type_name, file.lexeme(&func.ident.span));
+
+            if file.lexeme(&func.ident.span) == "drop" {
+                unsafe {
+                    if let Some(function) = self.module.get_function(&fun_name) {
+                        function.delete()
+                    }
+                }
+            }
+
+            fun_name
         } else {
             let lexeme = file.lexeme(&func.ident.span);
             if func.external || lexeme == "main" {
@@ -421,19 +419,24 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
             );
 
         if !ast::TypeKind::Struct(struct_type.clone()).is_copyable() {
-            let drop_func = self.module.add_function(
-                &format!("{}.drop", &struct_name),
-                self.context.void_type().fn_type(
-                    &vec![self
-                        .module
-                        .get_struct_type(&struct_name)
-                        .unwrap()
-                        .ptr_type(AddressSpace::Generic)
-                        .into()],
-                    false,
-                ),
-                None,
-            );
+            let drop_func_name = format!("{}.{}.drop", &struct_type.file_id, &struct_name);
+            let drop_func = if let Some(_) = self.module.get_function(&drop_func_name) {
+                return;
+            } else {
+                self.module.add_function(
+                    &format!("{}.{}.drop", &file.id(), &struct_name),
+                    self.context.void_type().fn_type(
+                        &vec![self
+                            .module
+                            .get_struct_type(&format!("{}.{}", &file.id(), &struct_name))
+                            .unwrap()
+                            .ptr_type(AddressSpace::Generic)
+                            .into()],
+                        false,
+                    ),
+                    None,
+                )
+            };
 
             let struct_drop_block = self.context.append_basic_block(drop_func, "entry");
             self.builder.position_at_end(struct_drop_block);
@@ -441,7 +444,7 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                 if !member_type.kind.is_copyable() {
                     let member_drop_func_name =
                         if let ast::TypeKind::Struct(struct_type) = &member_type.kind {
-                            format!("{}.drop", struct_type.name)
+                            format!("{}.{}.drop", &struct_type.file_id, &struct_type.name)
                         } else {
                             format!("{}.{}.drop", self.file.id(), member_type.kind.type_name())
                         };
@@ -486,6 +489,7 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                 inkwell::attributes::AttributeLoc::Param(0),
                 inkwell::attributes::Attribute::get_named_enum_kind_id("sret")
             ).is_some();
+
             for (mut i, param) in func_decl.get_param_iter().enumerate() {
                 if has_sret {
                     if i == 0 {
@@ -498,7 +502,11 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                     if func.target_type.is_some() && i == 0 {
                         "self".to_string()
                     } else {
-                        self.file.lexeme(&func.parameters[i].0.span).to_string()
+                        self.file.lexeme(&func.parameters[if func.target_type.is_some() {
+                            i - 1
+                        } else {
+                            i
+                        }].0.span).to_string()
                     },
                     param.into_pointer_value(),
                 );
@@ -526,10 +534,11 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                 self.builder.build_return(None);
             }
 
-            let last_block = func_decl.get_last_basic_block().unwrap();
-            if last_block.get_terminator().is_none() {
-                self.builder.position_at_end(last_block);
-                self.builder.build_unconditional_branch(retblock);
+            for block in func_decl.get_basic_blocks() {
+                if block.get_terminator().is_none() {
+                    self.builder.position_at_end(block);
+                    self.builder.build_unconditional_branch(retblock);
+                }
             }
 
             self.function_retblock
@@ -548,11 +557,14 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
     fn gen_expr_as_ptr(&mut self, expr: &ast::Expr) -> inkwell::values::PointerValue<'ctx> {
         if expr.kind.is_lvalue() {
             match &expr.kind {
-                ast::ExprKind::Var(var_expr) => (*self
-                    .namespace
-                    .get(self.file.lexeme(&var_expr.ident.span))
-                    .unwrap())
-                .into(),
+                ast::ExprKind::Var(var_expr) => {
+                    dbg!(self.file.lexeme(&var_expr.ident.span));
+                    (*self
+                        .namespace
+                        .get(self.file.lexeme(&var_expr.ident.span))
+                        .unwrap()
+                    ).into()
+                }
                 ast::ExprKind::Idx(idx_expr) => {
                     let ptr_to_el = self.gen_ptr_to_arr_el(idx_expr);
                     ptr_to_el.into()
@@ -1070,6 +1082,8 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                 self.builder.build_load(var_ptr, "")
             }
             ast::ExprKind::Call(call_expr) => {
+                let mut return_value = None;
+
                 if let ast::ExprKind::Var(var_expr) = &call_expr.callee.kind {
                     let func = if let Some(func) = self.module.get_function(&format!(
                         "{}.{}",
@@ -1092,88 +1106,94 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                         .map(|expr| self.gen_expr_as_ptr(expr).into())
                         .collect::<Vec<_>>();
 
+                        let mut has_sret = false;
                     if let Some(return_type) = &expr.typ {
-                        dbg!(&return_type.kind);
                         match &return_type.kind {
                             ast::TypeKind::Struct(_) | ast::TypeKind::Arr(_) => {
+                                has_sret = true;
                                 // C ABI: Struct returns are implemented as pointer first arg instead of an actual return
                                 let struct_return_value = self.builder.build_alloca(self.gen_type(return_type), "");
                                 genned_args.insert(0, struct_return_value.into());
                                 self.builder.build_call(func, &genned_args, "");
-                                return self.builder.build_load(struct_return_value, "");
+                                return_value = Some(self.builder.build_load(struct_return_value, ""));
                             }
                             _ => {}
                         }
                     }
 
-                    if let Either::Left(value) = self
-                        .builder
-                        .build_call(func, &genned_args, "")
-                        .try_as_basic_value()
-                    {
-                        value
-                    } else {
-                        self.context.i32_type().get_undef().into()
+                    if !has_sret {
+                        return_value = Some(
+                            if let Either::Left(value) = self
+                                .builder
+                                .build_call(func, &genned_args, "")
+                                .try_as_basic_value()
+                            {
+                                value
+                            } else {
+                                self.context.i32_type().get_undef().into()
+                            }
+                        );
                     }
                 } else if let ast::ExprKind::Binary(binary_expr) = &call_expr.callee.kind {
                     if let ast::ExprKind::Var(left_var_expr) = &binary_expr.left.kind {
-                        if binary_expr.op.kind == token::TokenKind::Dot {
-                            if self
-                                .file
-                                .direct_deps
-                                .get(self.file.lexeme(&left_var_expr.ident.span))
-                                .is_some()
+                        if self
+                            .file
+                            .direct_deps
+                            .get(self.file.lexeme(&left_var_expr.ident.span))
+                            .is_some()
+                        {
+                            // Left of '.' is a module type ident
+                            if let ast::ExprKind::Var(right_var_expr) = &binary_expr.right.kind
                             {
-                                // Left of '.' is a module type ident
-                                if let ast::ExprKind::Var(right_var_expr) = &binary_expr.right.kind
-                                {
-                                    let func = self
-                                        .module
-                                        .get_function(&format!(
-                                            "{}.{}",
-                                            self.file
-                                                .direct_deps
-                                                .get(self.file.lexeme(&left_var_expr.ident.span))
-                                                .unwrap()
-                                                .id(),
-                                            self.file.lexeme(&right_var_expr.ident.span)
-                                        ))
-                                        .unwrap();
+                                let func = self
+                                    .module
+                                    .get_function(&format!(
+                                        "{}.{}",
+                                        self.file
+                                            .direct_deps
+                                            .get(self.file.lexeme(&left_var_expr.ident.span))
+                                            .unwrap()
+                                            .id(),
+                                        self.file.lexeme(&right_var_expr.ident.span)
+                                    ))
+                                    .unwrap();
 
-                                    let mut genned_args = call_expr
-                                        .args
-                                        .iter()
-                                        .map(|expr| self.gen_expr_as_ptr(expr).into())
-                                        .collect::<Vec<_>>();
-                                        
-                                    if let Some(return_type) = &expr.typ {
-                                        dbg!(&return_type.kind);
-                                        match &return_type.kind {
-                                            ast::TypeKind::Struct(_) | ast::TypeKind::Arr(_) => {
-                                                // C ABI: Struct returns are implemented as pointer first arg instead of an actual return
-                                                let struct_return_value = self.builder.build_alloca(self.gen_type(return_type), "");
-                                                genned_args.insert(0, struct_return_value.into());
-                                                self.builder.build_call(func, &genned_args, "");
-                                                return self.builder.build_load(struct_return_value, "");
-                                            }
-                                            _ => {}
+                                let mut genned_args = call_expr
+                                    .args
+                                    .iter()
+                                    .map(|expr| self.gen_expr_as_ptr(expr).into())
+                                    .collect::<Vec<_>>();
+
+                                let mut has_sret = false;
+                                if let Some(return_type) = &expr.typ {
+                                    match &return_type.kind {
+                                        ast::TypeKind::Struct(_) | ast::TypeKind::Arr(_) => {
+                                            has_sret = true;
+                                            // C ABI: Struct returns are implemented as pointer first arg instead of an actual return
+                                            let struct_return_value = self.builder.build_alloca(self.gen_type(return_type), "");
+                                            genned_args.insert(0, struct_return_value.into());
+                                            self.builder.build_call(func, &genned_args, "");
+                                            return_value = Some(self.builder.build_load(struct_return_value, ""));
                                         }
+                                        _ => {}
                                     }
+                                }
 
-                                    return if let Either::Left(value) = self
-                                        .builder
-                                        .build_call(func, &genned_args, "")
-                                        .try_as_basic_value()
-                                    {
-                                        value
-                                    } else {
-                                        self.context.i32_type().get_undef().into()
-                                    };
+                                if !has_sret {
+                                    return_value = Some(
+                                        if let Either::Left(value) = self
+                                            .builder
+                                            .build_call(func, &genned_args, "")
+                                            .try_as_basic_value()
+                                        {
+                                            value
+                                        } else {
+                                            self.context.i32_type().get_undef().into()
+                                        }
+                                    );
                                 }
                             }
-                        }
-
-                        if let ast::ExprKind::Var(var_expr) = &binary_expr.right.kind {
+                        } else if let ast::ExprKind::Var(var_expr) = &binary_expr.right.kind {
                             // Transform `target.method(42)` to `target.method(target, 42)`
                             let target_ptr = self.gen_expr_as_ptr(&*binary_expr.left);
                             let type_name = if let ast::TypeKind::Struct(struct_type) =
@@ -1195,28 +1215,33 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                                     .collect::<Vec<_>>();
                                 genned_args.insert(0, target_ptr.into());
 
+                                let mut has_sret = false;
                                 if let Some(return_type) = &expr.typ {
-                                    dbg!(&return_type.kind);
                                     match &return_type.kind {
                                         ast::TypeKind::Struct(_) | ast::TypeKind::Arr(_) => {
+                                            has_sret = true;
                                             // C ABI: Struct returns are implemented as pointer first arg instead of an actual return
                                             let struct_return_value = self.builder.build_alloca(self.gen_type(return_type), "");
                                             genned_args.insert(0, struct_return_value.into());
                                             self.builder.build_call(func, &genned_args, "");
-                                            return self.builder.build_load(struct_return_value, "");
+                                            return_value = Some(self.builder.build_load(struct_return_value, ""));
                                         }
                                         _ => {}
                                     }
                                 }
 
-                                if let Either::Left(value) = self
-                                    .builder
-                                    .build_call(func, &genned_args, "")
-                                    .try_as_basic_value()
-                                {
-                                    value
-                                } else {
-                                    self.context.i32_type().get_undef().into()
+                                if !has_sret {
+                                    return_value = Some(
+                                        if let Either::Left(value) = self
+                                            .builder
+                                            .build_call(func, &genned_args, "")
+                                            .try_as_basic_value()
+                                        {
+                                            value
+                                        } else {
+                                            self.context.i32_type().get_undef().into()
+                                        }
+                                    );
                                 }
                             } else {
                                 panic!("internal-error: uncaught undefined method")
@@ -1230,6 +1255,8 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                 } else {
                     panic!("internal-error: can only call variable & get expressions")
                 }
+
+                return_value.unwrap()
             }
             ast::ExprKind::As(as_expr) => {
                 let genned_expr = self.gen_expr(&as_expr.expr, false);
@@ -1539,14 +1566,16 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
         };
 
         if let Some(expr_type) = &expr.typ {
+            let drop_func_name = if let ast::TypeKind::Struct(struct_type) = &expr_type.kind {
+                format!("{}.{}.drop", &struct_type.file_id, &struct_type.name)
+            } else {
+                format!("{}.{}.drop", self.file.id(), &expr_type.kind.type_name())
+            };
+
+            dbg!(&expr_type.kind.type_name());
+            dbg!(&drop_func_name);
             if !expr.kind.is_lvalue() && !expr_type.kind.is_copyable() && !has_owner {
-                let prev_block = self.current_function.unwrap().get_last_basic_block().unwrap();
-    
-                let drop_func_name = if let ast::TypeKind::Struct(struct_type) = &expr_type.kind {
-                    format!("{}.drop", struct_type.name)
-                } else {
-                    format!("{}.{}.drop", self.file.id(), &expr_type.kind.type_name())
-                };
+                let prev_block = self.builder.get_insert_block().unwrap();
     
                 let alloca = self.builder.build_alloca(
                     self.gen_type(expr_type), 
@@ -1562,7 +1591,26 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                 );
     
                 self.builder.position_at_end(prev_block);
-            }    
+            } else if expr_type.kind.is_copyable() {
+                if let Some(drop_func) = self.module.get_function(&drop_func_name) {
+                    let prev_block = self.builder.get_insert_block().unwrap();
+    
+                    let alloca = self.builder.build_alloca(
+                        self.gen_type(expr_type), 
+                        "",
+                    );
+                    self.builder.build_store(alloca, genned_expr);
+        
+                    self.builder.position_at_end(self.function_retblock.unwrap());
+                    self.builder.build_call(
+                        drop_func, 
+                        &vec![alloca.into()], 
+                        "",
+                    );
+        
+                    self.builder.position_at_end(prev_block);
+                }
+            }
         }
 
         genned_expr
@@ -1607,19 +1655,19 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                     .expect("internal-error: cannot generate if statement outside function");
 
                 let cond_value = self.gen_expr(&if_stmt.condition, false);
-                let then_block = self.context.append_basic_block(current_func, "");
+                let then_block = self.context.append_basic_block(current_func, "then");
                 let elif_blocks = if_stmt
                     .elif_stmts
                     .iter()
                     .map(|(_, _)| {
                         (
-                            self.context.append_basic_block(current_func, ""),
-                            self.context.append_basic_block(current_func, ""),
+                            self.context.append_basic_block(current_func, "elif_cond"),
+                            self.context.append_basic_block(current_func, "elif_block"),
                         )
                     })
                     .collect::<Vec<_>>();
-                let else_block = self.context.append_basic_block(current_func, "");
-                let after_block = self.context.append_basic_block(current_func, "");
+                let else_block = self.context.append_basic_block(current_func, "else");
+                let after_block = self.context.append_basic_block(current_func, "after");
 
                 self.builder.build_conditional_branch(
                     cond_value.into_int_value(),
@@ -1678,8 +1726,8 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                     .expect("internal-error: cannot generate while statement outside function");
 
                 let cond_value = self.gen_expr(&while_stmt.condition, false);
-                let while_block = self.context.append_basic_block(current_func, "");
-                let after_block = self.context.append_basic_block(current_func, "");
+                let while_block = self.context.append_basic_block(current_func, "loop");
+                let after_block = self.context.append_basic_block(current_func, "after");
 
                 self.builder.build_conditional_branch(
                     cond_value.into_int_value(),
@@ -1691,6 +1739,7 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                 for stmt in &while_stmt.block.stmts {
                     self.gen_stmt(stmt)
                 }
+                let cond_value = self.gen_expr(&while_stmt.condition, false);
                 self.builder.build_conditional_branch(
                     cond_value.into_int_value(),
                     while_block,

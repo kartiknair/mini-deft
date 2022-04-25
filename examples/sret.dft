@@ -1,0 +1,13 @@
+struct Container {
+    value f64
+}
+
+fun container(n f64) Container {
+    return Container {
+        value: n,
+    }
+}
+
+fun main() {
+    var c1 = container(12.67)
+}

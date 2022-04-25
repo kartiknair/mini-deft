@@ -1,6 +1,6 @@
 use crate::common::{Error, Span};
 
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq)]
 pub enum TokenKind {
     String,
     Int,
@@ -97,7 +97,7 @@ impl TokenKind {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Token {
     pub kind: TokenKind,
     pub span: Span,

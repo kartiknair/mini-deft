@@ -8,7 +8,7 @@ use derive_more::{From, TryInto};
 
 use crate::{common::Span, token};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PrimType {
     Int(u8),
     UInt(u8),
@@ -22,38 +22,38 @@ impl PrimType {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunType {
     pub parameters: Vec<Type>,
     pub returns: Option<Box<Type>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructType {
     pub name: String,
     pub file_id: String,
     pub members: Vec<(String, Type)>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArrType {
     pub eltype: Box<Type>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoxType {
     pub eltype: Box<Type>,
 }
 
 // arbitrary named type. can resolve to any kind of type (currently
 // only struct and primitive types, but once aliases are introduced)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NamedType {
     pub source: Option<token::Token>,
     pub name: token::Token,
 }
 
-#[derive(Debug, Clone, From, TryInto)]
+#[derive(Debug, Clone, From, TryInto, PartialEq, Eq)]
 #[try_into(ref, ref_mut)]
 pub enum TypeKind {
     Prim(PrimType),
@@ -99,13 +99,13 @@ impl TypeKind {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Type {
     pub kind: TypeKind,
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunDecl {
     pub exported: bool,
     pub external: bool,
@@ -117,7 +117,7 @@ pub struct FunDecl {
     pub block: Option<BlockStmt>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructDecl {
     pub exported: bool,
     pub ident: token::Token,
@@ -125,20 +125,20 @@ pub struct StructDecl {
     pub members: Vec<(token::Token, Type)>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportDecl {
     pub path: token::Token,
     pub alias: Option<token::Token>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VarStmt {
     pub ident: token::Token,
     pub typ: Option<Type>,
     pub init: Expr,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IfStmt {
     pub condition: Expr,
     pub if_block: BlockStmt,
@@ -146,28 +146,28 @@ pub struct IfStmt {
     pub else_block: Option<BlockStmt>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WhileStmt {
     pub condition: Expr,
     pub block: BlockStmt,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReturnStmt {
     pub value: Option<Expr>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExprStmt {
     pub expr: Expr,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockStmt {
     pub stmts: Vec<Stmt>,
 }
 
-#[derive(Debug, Clone, From, TryInto)]
+#[derive(Debug, Clone, From, TryInto, PartialEq, Eq)]
 pub enum StmtKind {
     Fun(FunDecl),
     Struct(StructDecl),
@@ -181,67 +181,67 @@ pub enum StmtKind {
     Block(BlockStmt),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Stmt {
     pub kind: StmtKind,
     pub pointer: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnaryExpr {
     pub op: token::Token,
     pub expr: Box<Expr>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BinaryExpr {
     pub op: token::Token,
     pub left: Box<Expr>,
     pub right: Box<Expr>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IdxExpr {
     pub target: Box<Expr>,
     pub idx: Box<Expr>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VarExpr {
     pub ident: token::Token,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallExpr {
     pub callee: Box<Expr>,
     pub template_inits: Vec<Type>,
     pub args: Vec<Expr>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AsExpr {
     pub expr: Box<Expr>,
     pub typ: Type,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructLit {
     pub typ: Type,
     // pub template_inits: Vec<Type>,
     pub inits: Vec<(token::Token, Expr)>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArrLit {
     pub elements: Vec<Expr>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Lit {
     pub token: token::Token,
 }
 
-#[derive(Debug, Clone, From, TryInto)]
+#[derive(Debug, Clone, From, TryInto, PartialEq, Eq)]
 pub enum ExprKind {
     Unary(UnaryExpr),
     Binary(BinaryExpr),
@@ -264,14 +264,14 @@ impl ExprKind {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Expr {
     pub kind: ExprKind,
     pub span: Span,
     pub typ: Option<Type>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct File {
     pub path: PathBuf,
     pub source: String,

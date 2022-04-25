@@ -1,0 +1,79 @@
+export struct Window {
+    width u64
+    height u64
+    _sdl_window ~u8
+    _sdl_renderer ~u8
+}
+
+export struct Event {
+    type u64
+    _sdl_event ~u8
+}
+
+export struct Color {
+    r u8
+    g u8
+    b u8
+    a u8
+}
+
+extern fun rand() i32
+extern fun getchar() i32
+
+extern fun sdl_init_everything_c() i32
+extern fun sdl_wrapped_window_c(title [u8], width u64, height u64) Window
+extern fun sdl_destroy_window_c(window Window)
+
+extern fun sdl_window_clear_c(window Window)
+extern fun sdl_window_set_color_c(window Window, color Color)
+extern fun sdl_window_draw_point_c(window Window, x u64, y u64)
+extern fun sdl_window_draw_rect_c(window Window, x u64, y u64, width u64, height u64)
+extern fun sdl_window_present_c(window Window)
+
+extern fun sdl_blank_event_c() Event
+extern fun sdl_poll_event_c(event Event) i32
+extern fun sdl_destroy_event_c(event Event)
+
+export fun init() bool {
+    return sdl_init_everything_c() == 0
+}
+
+export fun window(title [u8], width u64, height u64) Window {
+    return sdl_wrapped_window_c(title, width, height)
+}
+
+export fun drop() for Window {
+    sdl_destroy_window_c(self)
+}
+
+export fun clear() for Window {
+    sdl_window_clear_c(self)
+}
+
+export fun set_color(color Color) for Window {
+    sdl_window_set_color_c(self, color)
+}
+
+export fun draw_point(x u64, y u64) for Window {
+    sdl_window_draw_point_c(self, x, y)
+}
+
+export fun draw_rect(x u64, y u64, width u64, height u64) for Window {
+    sdl_window_draw_rect_c(self, x, y, width, height)
+}
+
+export fun present() for Window {
+    sdl_window_present_c(self)
+}
+
+export fun event() Event {
+    return sdl_blank_event_c()
+}
+
+export fun poll() bool for Event {
+    return sdl_poll_event_c(self) == 0
+}
+
+export fun drop() for Event {
+    sdl_destroy_event_c(self)
+}

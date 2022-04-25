@@ -220,8 +220,6 @@ impl<'a> Analyzer<'a> {
             }
         }
 
-        dbg!(&self.typespace);
-
         let function_name = self.file.lexeme(&fun_decl.ident.span);
 
         if let Some(return_type) = &mut fun_decl.return_type {
@@ -322,7 +320,7 @@ impl<'a> Analyzer<'a> {
                         .map(|return_type| Box::new(return_type.clone())),
                 }),
             };
-            dbg!(&fun_type);
+
             self.namespace.insert(function_name.to_string(), fun_type);
         }
 
@@ -1060,6 +1058,10 @@ impl<'a> Analyzer<'a> {
                                                 file: None,
                                             });
                                         }
+                                        expr.typ = Some(ast::Type {
+                                            span: 0..0,
+                                            kind: ast::TypeKind::Prim(ast::PrimType::Bool),
+                                        });
                                     }
                                     _ => unreachable!(),
                                 }
@@ -1115,7 +1117,6 @@ impl<'a> Analyzer<'a> {
 
                         for init_type in call_expr.template_inits.iter_mut() {
                             self.analyze_type(init_type)?;
-                            dbg!(init_type);
                         }
 
                         self.analyze_template_fun(&mut fun_decl, &call_expr.template_inits)?;
@@ -1131,7 +1132,6 @@ impl<'a> Analyzer<'a> {
 
                 if let Some(callee_type) = &call_expr.callee.typ {
                     if let ast::TypeKind::Fun(fun_type) = &callee_type.kind {
-                        dbg!(fun_type);
                         // Validate arguments
                         for (i, arg) in call_expr.args.iter().enumerate() {
                             if arg.typ.is_some() {
@@ -1609,4 +1609,269 @@ pub fn get_deps<'ctx>(file: &ast::File) -> Result<HashMap<String, ast::File>, Er
         format!("{}_{}", a, b.to_str().unwrap())
     }));
     Ok(deps)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::HashMap, path::PathBuf};
+
+    use crate::{ast, lexer, parser};
+
+    #[test]
+    fn literals() {
+        let source = r#"
+            42
+            3.14
+            true
+            [1, 3, 4]
+            "hello"
+        "#;
+
+        let mut file = ast::File {
+            path: PathBuf::from(""),
+            source: source.to_string(),
+            stmts: Vec::new(),
+            direct_deps: HashMap::new(),
+        };
+        let tokens = match lexer::lex(source) {
+            Ok(tokens) => tokens,
+            Err(_) => {
+                assert!(false);
+                unreachable!()
+            }
+        };
+
+        file.stmts = match parser::parse(&tokens) {
+            Ok(stmts) => stmts,
+            Err(_) => {
+                assert!(false);
+                unreachable!()
+            }
+        };
+        file.direct_deps = match super::analyze_mut(&mut file) {
+            Ok(deps) => deps,
+            Err(_) => {
+                assert!(false);
+                unreachable!()
+            }
+        };
+
+        let expected_type_kinds = vec![
+            ast::PrimType::Int(32).into(),
+            ast::PrimType::Float(64).into(),
+            ast::PrimType::Bool.into(),
+            ast::ArrType {
+                eltype: Box::new(ast::Type {
+                    kind: ast::PrimType::Int(32).into(),
+                    span: 0..0,
+                }),
+            }
+            .into(),
+            ast::ArrType {
+                eltype: Box::new(ast::Type {
+                    kind: ast::PrimType::UInt(8).into(),
+                    span: 0..0,
+                }),
+            }
+            .into(),
+        ];
+
+        for (i, stmt) in file.stmts.iter().enumerate() {
+            if let ast::StmtKind::Expr(expr_stmt) = &stmt.kind {
+                assert_eq!(
+                    expr_stmt.expr.typ.as_ref().unwrap().kind,
+                    expected_type_kinds[i]
+                )
+            } else {
+                assert!(false);
+            }
+        }
+    }
+
+    #[test]
+    fn void_types() {
+        let source = r#"
+            fun void() {
+            }
+
+            void()()
+        "#;
+
+        let mut file = ast::File {
+            path: PathBuf::from(""),
+            source: source.to_string(),
+            stmts: Vec::new(),
+            direct_deps: HashMap::new(),
+        };
+        let tokens = match lexer::lex(source) {
+            Ok(tokens) => tokens,
+            Err(_) => {
+                assert!(false);
+                unreachable!()
+            }
+        };
+
+        file.stmts = match parser::parse(&tokens) {
+            Ok(stmts) => stmts,
+            Err(_) => {
+                assert!(false);
+                unreachable!()
+            }
+        };
+        let analysis_result = super::analyze_mut(&mut file);
+        assert!(analysis_result.is_err());
+    }
+
+    #[test]
+    fn typespace() {
+        let correct_source = r#"
+            struct Container {
+                value i32
+            }
+
+            fun main() {
+                var c1 = Container{value: 42}
+            }
+        "#;
+
+        let invalid_source = r#"
+            fun main() {
+                var c1 = Struct{}
+            }
+        "#;
+
+        let mut correct_file = ast::File {
+            path: PathBuf::from(""),
+            source: correct_source.to_string(),
+            stmts: Vec::new(),
+            direct_deps: HashMap::new(),
+        };
+
+        let correct_tokens = match lexer::lex(correct_source) {
+            Ok(tokens) => tokens,
+            Err(_) => {
+                assert!(false);
+                unreachable!()
+            }
+        };
+
+        correct_file.stmts = match parser::parse(&correct_tokens) {
+            Ok(stmts) => stmts,
+            Err(_) => {
+                assert!(false);
+                unreachable!()
+            }
+        };
+
+        correct_file.direct_deps = match super::analyze_mut(&mut correct_file) {
+            Ok(deps) => deps,
+            Err(_) => {
+                assert!(false);
+                unreachable!()
+            }
+        };
+
+        let mut invalid_file = ast::File {
+            path: PathBuf::from(""),
+            source: invalid_source.to_string(),
+            stmts: Vec::new(),
+            direct_deps: HashMap::new(),
+        };
+        let invalid_tokens = match lexer::lex(invalid_source) {
+            Ok(tokens) => tokens,
+            Err(_) => {
+                assert!(false);
+                unreachable!()
+            }
+        };
+
+        invalid_file.stmts = match parser::parse(&invalid_tokens) {
+            Ok(stmts) => stmts,
+            Err(_) => {
+                assert!(false);
+                unreachable!()
+            }
+        };
+
+        let invalid_analysis_result = super::analyze_mut(&mut invalid_file);
+        assert!(invalid_analysis_result.is_err());
+    }
+
+    #[test]
+    fn namespace() {
+        let correct_source = r#"
+            fun func() i32 {
+                return 42
+            }
+
+            fun main() {
+                var n1 = 42
+                var n2 = n1
+                var n3 = func()
+            }
+        "#;
+
+        let invalid_source = r#"
+            fun main() {
+                var n2 = n1
+                var n3 = func()
+            }
+        "#;
+
+        let mut correct_file = ast::File {
+            path: PathBuf::from(""),
+            source: correct_source.to_string(),
+            stmts: Vec::new(),
+            direct_deps: HashMap::new(),
+        };
+
+        let correct_tokens = match lexer::lex(correct_source) {
+            Ok(tokens) => tokens,
+            Err(_) => {
+                assert!(false);
+                unreachable!()
+            }
+        };
+
+        correct_file.stmts = match parser::parse(&correct_tokens) {
+            Ok(stmts) => stmts,
+            Err(_) => {
+                assert!(false);
+                unreachable!()
+            }
+        };
+
+        correct_file.direct_deps = match super::analyze_mut(&mut correct_file) {
+            Ok(deps) => deps,
+            Err(_) => {
+                assert!(false);
+                unreachable!()
+            }
+        };
+
+        let mut invalid_file = ast::File {
+            path: PathBuf::from(""),
+            source: invalid_source.to_string(),
+            stmts: Vec::new(),
+            direct_deps: HashMap::new(),
+        };
+        let invalid_tokens = match lexer::lex(invalid_source) {
+            Ok(tokens) => tokens,
+            Err(_) => {
+                assert!(false);
+                unreachable!()
+            }
+        };
+
+        invalid_file.stmts = match parser::parse(&invalid_tokens) {
+            Ok(stmts) => stmts,
+            Err(_) => {
+                assert!(false);
+                unreachable!()
+            }
+        };
+
+        let invalid_analysis_result = super::analyze_mut(&mut invalid_file);
+        assert!(invalid_analysis_result.is_err());
+    }
 }

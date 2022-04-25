@@ -10,7 +10,7 @@ typedef struct {
   uint64_t capacity;
 } str;
 
-char* to_null_terminated(const str* string) {
+static char* to_null_terminated(const str* string) {
   char* nulled = malloc(string->length + 1);
   for (uint64_t i = 0; i < string->length; i++) {
     nulled[i] = string->buffer[i];

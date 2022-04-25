@@ -1,0 +1,15 @@
+import "testing-std/std.dft"
+
+fun main() {
+    var n = 5
+    while n > 0 {
+        if n == 1 {
+            std.println("Helooooooo")
+        }
+
+        std.println(n.to_string())
+        n = n - 1
+    }
+
+    std.println("done")
+}

@@ -1,0 +1,7 @@
+import "testing-std/std.dft"
+
+fun main() {
+    if true {
+        std.println("hello")
+    }
+}

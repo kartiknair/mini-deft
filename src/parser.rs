@@ -265,10 +265,15 @@ impl<'a> Parser<'a> {
                 })
             }
             TokenKind::LeftParen => {
-                return Err(self.error_at_current("grouping expressions are not yet implemented"))
+                self.current += 1;
+                expr = Some(self.parse_expr()?);
+                self.expect(
+                    TokenKind::RightParen,
+                    "expected closing ')' in grouping expression",
+                )?;
             }
             TokenKind::LeftBracket => {
-                let slice_literal_start = self.current;
+                let slice_literal_start = self.peek()?.span.start;
                 self.current += 1;
 
                 let mut elements = Vec::new();
@@ -909,4 +914,246 @@ pub fn parse(tokens: &[Token]) -> Result<Vec<ast::Stmt>, Error> {
     }
 
     Ok(stmts)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        ast, lexer,
+        token::{self, TokenKind},
+    };
+
+    #[test]
+    fn literals() {
+        // "hello";
+        let source = r#"42;3.14;[1,2,3];"#;
+        let tokens = match lexer::lex(source) {
+            Ok(tokens) => tokens,
+            Err(_) => {
+                assert!(false);
+                unreachable!()
+            }
+        };
+        let stmts = match super::parse(&tokens) {
+            Ok(stmts) => stmts,
+            Err(_) => {
+                assert!(false);
+                unreachable!()
+            }
+        };
+
+        let expected_ast = vec![
+            ast::Stmt {
+                pointer: 0..2,
+                kind: ast::ExprStmt {
+                    expr: ast::Expr {
+                        span: 0..2,
+                        typ: None,
+                        kind: ast::Lit {
+                            token: token::Token {
+                                kind: TokenKind::Int,
+                                span: 0..2,
+                            },
+                        }
+                        .into(),
+                    },
+                }
+                .into(),
+            },
+            ast::Stmt {
+                pointer: 3..7,
+                kind: ast::ExprStmt {
+                    expr: ast::Expr {
+                        span: 3..7,
+                        typ: None,
+                        kind: ast::Lit {
+                            token: token::Token {
+                                kind: TokenKind::Float,
+                                span: 3..7,
+                            },
+                        }
+                        .into(),
+                    },
+                }
+                .into(),
+            },
+            ast::Stmt {
+                pointer: 8..15,
+                kind: ast::ExprStmt {
+                    expr: ast::Expr {
+                        span: 8..15,
+                        typ: None,
+                        kind: ast::ArrLit {
+                            elements: vec![
+                                ast::Expr {
+                                    span: 9..10,
+                                    typ: None,
+                                    kind: ast::Lit {
+                                        token: token::Token {
+                                            kind: TokenKind::Int,
+                                            span: 9..10,
+                                        },
+                                    }
+                                    .into(),
+                                },
+                                ast::Expr {
+                                    span: 11..12,
+                                    typ: None,
+                                    kind: ast::Lit {
+                                        token: token::Token {
+                                            kind: TokenKind::Int,
+                                            span: 11..12,
+                                        },
+                                    }
+                                    .into(),
+                                },
+                                ast::Expr {
+                                    span: 13..14,
+                                    typ: None,
+                                    kind: ast::Lit {
+                                        token: token::Token {
+                                            kind: TokenKind::Int,
+                                            span: 13..14,
+                                        },
+                                    }
+                                    .into(),
+                                },
+                            ],
+                        }
+                        .into(),
+                    },
+                }
+                .into(),
+            },
+        ];
+
+        assert_eq!(stmts, expected_ast)
+    }
+
+    #[test]
+    fn operator_precedence() {
+        let source = r#"3 - 4 * 1;"#;
+        let tokens = match lexer::lex(source) {
+            Ok(tokens) => tokens,
+            Err(_) => {
+                assert!(false);
+                unreachable!()
+            }
+        };
+        let stmts = match super::parse(&tokens) {
+            Ok(stmts) => stmts,
+            Err(_) => {
+                assert!(false);
+                unreachable!()
+            }
+        };
+
+        let expected_ast = ast::ExprStmt {
+            expr: ast::Expr {
+                typ: None,
+                span: 0..9,
+
+                kind: ast::BinaryExpr {
+                    left: Box::new(ast::Expr {
+                        typ: None,
+                        span: 0..1,
+
+                        kind: ast::Lit {
+                            token: token::Token {
+                                kind: TokenKind::Int,
+                                span: 0..1,
+                            },
+                        }
+                        .into(),
+                    }),
+                    op: token::Token {
+                        kind: TokenKind::Minus,
+                        span: 2..3,
+                    },
+                    right: Box::new(ast::Expr {
+                        typ: None,
+                        span: 4..9,
+
+                        kind: ast::BinaryExpr {
+                            left: Box::new(ast::Expr {
+                                typ: None,
+                                span: 4..5,
+
+                                kind: ast::Lit {
+                                    token: token::Token {
+                                        kind: TokenKind::Int,
+                                        span: 4..5,
+                                    },
+                                }
+                                .into(),
+                            }),
+                            op: token::Token {
+                                kind: TokenKind::Star,
+                                span: 6..7,
+                            },
+                            right: Box::new(ast::Expr {
+                                typ: None,
+                                span: 8..9,
+
+                                kind: ast::Lit {
+                                    token: token::Token {
+                                        kind: TokenKind::Int,
+                                        span: 8..9,
+                                    },
+                                }
+                                .into(),
+                            }),
+                        }
+                        .into(),
+                    }),
+                }
+                .into(),
+            },
+        };
+
+        if let ast::StmtKind::Expr(expr_stmt) = &stmts[0].kind {
+            assert_eq!(expr_stmt, &expected_ast)
+        } else {
+            assert!(false)
+        }
+    }
+
+    #[test]
+    fn struct_literal_before_expected_block() {
+        let source = r#"
+            if x == Struct{value: 42} {
+
+            }
+        "#;
+        let tokens = match lexer::lex(source) {
+            Ok(tokens) => tokens,
+            Err(_) => {
+                assert!(false);
+                unreachable!()
+            }
+        };
+        let stmts = super::parse(&tokens);
+        assert!(stmts.is_ok());
+    }
+
+    #[test]
+    fn postfix_operations() {
+        let source = r#"
+            a.b.c.d.e.f
+            call()
+            idx[idx]
+
+            call()()()
+            idx[idx[idx][idx]][idx][idx]
+        "#;
+        let tokens = match lexer::lex(source) {
+            Ok(tokens) => tokens,
+            Err(_) => {
+                assert!(false);
+                unreachable!()
+            }
+        };
+        let stmts = super::parse(&tokens);
+        assert!(stmts.is_ok());
+    }
 }
