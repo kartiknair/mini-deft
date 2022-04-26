@@ -35,6 +35,7 @@ pub enum TokenKind {
 
     Comma,
     Dot,
+    Arrow,
     Colon,
     Caret,
     Or,

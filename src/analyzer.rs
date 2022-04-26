@@ -128,6 +128,30 @@ impl<'a> Analyzer<'a> {
                 let right_box_type: &ast::BoxType = right.kind.borrow().try_into().unwrap();
                 self.type_eq(&left_box_type.eltype, &right_box_type.eltype)
             }
+            ast::TypeKind::Fun(left_fun_type) => {
+                let right_fun_type: &ast::FunType = right.kind.borrow().try_into().unwrap();
+                let mut all_params_same = true;
+                if left_fun_type.parameters.len() == right_fun_type.parameters.len() {
+                    for (i, left_param_type) in left_fun_type.parameters.iter().enumerate() {
+                        if !self.type_eq(left_param_type, &right_fun_type.parameters[i]) {
+                            all_params_same = false;
+                            break;
+                        }
+                    }
+                } else {
+                    all_params_same = false;
+                }
+
+                let return_type_same = if let (Some(left_return_type), Some(right_return_type)) =
+                    (&left_fun_type.returns, &right_fun_type.returns)
+                {
+                    self.type_eq(&*left_return_type, &*right_return_type)
+                } else {
+                    false
+                };
+
+                all_params_same && return_type_same
+            }
             _ => {
                 panic!(
                     "Type equality has not been implemented for kind: {:?}",
@@ -144,6 +168,15 @@ impl<'a> Analyzer<'a> {
             }
             ast::TypeKind::Arr(arr_type) => {
                 self.analyze_type(&mut arr_type.eltype)?;
+            }
+            ast::TypeKind::Fun(fun_type) => {
+                for param in fun_type.parameters.iter_mut() {
+                    self.analyze_type(param)?;
+                }
+
+                if let Some(return_type) = &mut fun_type.returns {
+                    self.analyze_type(&mut *return_type)?;
+                }
             }
             ast::TypeKind::Named(named_type) => {
                 if let Some(resolved_type_info) = self

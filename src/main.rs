@@ -66,8 +66,6 @@ fn llvm_modules_from_filename<'ctx>(filename: &str, context: &'ctx Context) -> V
         Err(err) => report_error_and_exit(err, &file.source, filename),
     };
 
-    dbg!(file.direct_deps.keys().into_iter().collect::<Vec<_>>());
-
     codegen::gen_modules(context, &file)
 }
 
@@ -80,7 +78,7 @@ fn main() {
         .usage("deft <command> [options...]")
         .command(
             Command::new("build")
-                .description("")
+                .description("Builds a native executable from a given file.")
                 .usage("deft build <filename> [options...]")
                 .action(|c| {
                     let linker = c.string_flag("linker").unwrap_or_else(|_| "cc".to_string());
@@ -90,6 +88,12 @@ fn main() {
                     let exe_path = c
                         .string_flag("outfile")
                         .unwrap_or_else(|_| "a.out".to_string());
+                    let exe_path = env::current_dir()
+                        .unwrap()
+                        .join(exe_path)
+                        .to_str()
+                        .unwrap()
+                        .to_string();
 
                     let context = inkwell::context::Context::create();
                     let llvm_modules = llvm_modules_from_filename(&c.args[0], &context);
@@ -142,19 +146,16 @@ fn main() {
 
                     let mut linker_command = process::Command::new(linker);
                     linker_command.args(&linker_args);
-                    dbg!("linker command {}", &linker_command);
 
                     let link_output = linker_command
                         .output()
                         .expect("failed to execute linker command");
 
-                    if cfg!(debug_assertions) {
-                        if !link_output.stdout.is_empty() {
-                            println!("{}", String::from_utf8_lossy(&link_output.stdout));
-                        }
-                        if !link_output.stderr.is_empty() {
-                            println!("{}", String::from_utf8_lossy(&link_output.stderr));
-                        }
+                    if !link_output.stdout.is_empty() {
+                        println!("{}", String::from_utf8_lossy(&link_output.stdout));
+                    }
+                    if !link_output.stderr.is_empty() {
+                        println!("{}", String::from_utf8_lossy(&link_output.stderr));
                     }
                 })
                 .flag(

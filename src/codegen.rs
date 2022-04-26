@@ -1,11 +1,11 @@
-use std::{collections::HashMap, convert::TryInto};
+use std::{collections::HashMap, convert::{TryInto, TryFrom}};
 
 use either::Either;
 use inkwell::{
     context::Context,
     module::{Module, Linkage},
     types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, AnyType},
-    values::{BasicValueEnum, FunctionValue},
+    values::{BasicValueEnum, FunctionValue, CallableValue},
     AddressSpace,
 };
 
@@ -257,7 +257,20 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
 
                 arr_struct_type.into()
             }
-            ast::TypeKind::Fun(_) => todo!(),
+            ast::TypeKind::Fun(fun_type) => {
+                if let Some(return_type) = &fun_type.returns {
+                    let genned_type = self.gen_type(&*return_type);
+                    genned_type.fn_type(
+                        &fun_type.parameters.iter().map(|typ| self.gen_type(typ).into()).collect::<Vec<_>>(),
+                        false,
+                    ).ptr_type(AddressSpace::Generic).into()
+                } else {
+                    self.context.void_type().fn_type(
+                        &fun_type.parameters.iter().map(|typ| self.gen_type(typ).into()).collect::<Vec<_>>(),
+                        false,
+                    ).ptr_type(AddressSpace::Generic).into()
+                }
+            },
             ast::TypeKind::Struct(struct_type) => {
                 self
                     .module
@@ -558,12 +571,23 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
         if expr.kind.is_lvalue() {
             match &expr.kind {
                 ast::ExprKind::Var(var_expr) => {
-                    dbg!(self.file.lexeme(&var_expr.ident.span));
-                    (*self
-                        .namespace
-                        .get(self.file.lexeme(&var_expr.ident.span))
-                        .unwrap()
-                    ).into()
+                    if let ast::TypeKind::Fun(_) = &expr.typ.as_ref().unwrap().kind {
+                        let wrapper_ptr = self.builder.build_alloca(self.gen_type(&expr.typ.as_ref().unwrap()), "");
+                        let global_ptr = self
+                            .module
+                            .get_function(&format!("{}.{}", self.file.id(), self.file.lexeme(&var_expr.ident.span)))
+                            .unwrap()
+                            .as_global_value()
+                            .as_pointer_value();
+                        self.builder.build_store(wrapper_ptr, global_ptr);
+                        wrapper_ptr
+                    } else {
+                        (*self
+                            .namespace
+                            .get(self.file.lexeme(&var_expr.ident.span))
+                            .unwrap()
+                        ).into()
+                    }
                 }
                 ast::ExprKind::Idx(idx_expr) => {
                     let ptr_to_el = self.gen_ptr_to_arr_el(idx_expr);
@@ -1090,12 +1114,14 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                         self.file.id(),
                         self.file.lexeme(&var_expr.ident.span)
                     )) {
-                        func
+                        Either::Left(func)
                     } else if let Some(func) = self
                         .module
                         .get_function(self.file.lexeme(&var_expr.ident.span))
                     {
-                        func
+                        Either::Left(func)
+                    } else if let Some(fun_ptr) = self.namespace.get(self.file.lexeme(&var_expr.ident.span)) {
+                        Either::Right(self.builder.build_load(*fun_ptr, "").into_pointer_value())
                     } else {
                         panic!("internal-error: uncaught undefined function")
                     };
@@ -1114,7 +1140,10 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                                 // C ABI: Struct returns are implemented as pointer first arg instead of an actual return
                                 let struct_return_value = self.builder.build_alloca(self.gen_type(return_type), "");
                                 genned_args.insert(0, struct_return_value.into());
-                                self.builder.build_call(func, &genned_args, "");
+                                self.builder.build_call(match func {
+                                    Either::Left(func) => CallableValue::from(func),
+                                    Either::Right(ptr) => CallableValue::try_from(ptr).unwrap(),
+                                }, &genned_args, "");
                                 return_value = Some(self.builder.build_load(struct_return_value, ""));
                             }
                             _ => {}
@@ -1123,11 +1152,10 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
 
                     if !has_sret {
                         return_value = Some(
-                            if let Either::Left(value) = self
-                                .builder
-                                .build_call(func, &genned_args, "")
-                                .try_as_basic_value()
-                            {
+                            if let Either::Left(value) = self.builder.build_call(match func {
+                                Either::Left(func) => CallableValue::from(func),
+                                Either::Right(ptr) => CallableValue::try_from(ptr).unwrap(),
+                            }, &genned_args, "").try_as_basic_value() {
                                 value
                             } else {
                                 self.context.i32_type().get_undef().into()
@@ -1572,8 +1600,6 @@ impl<'a, 'ctx> Generator<'a, 'ctx> {
                 format!("{}.{}.drop", self.file.id(), &expr_type.kind.type_name())
             };
 
-            dbg!(&expr_type.kind.type_name());
-            dbg!(&drop_func_name);
             if !expr.kind.is_lvalue() && !expr_type.kind.is_copyable() && !has_owner {
                 let prev_block = self.builder.get_insert_block().unwrap();
     

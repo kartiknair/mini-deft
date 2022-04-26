@@ -192,7 +192,14 @@ impl Lexer {
                 }
             }
             '^' => Ok(Some(self.create_token(TokenKind::Caret))),
-            '-' => Ok(Some(self.create_token(TokenKind::Minus))),
+            '-' => {
+                if self.peek()? == '>' {
+                    self.advance();
+                    Ok(Some(self.create_token(TokenKind::Arrow)))
+                } else {
+                    Ok(Some(self.create_token(TokenKind::Minus)))
+                }
+            }
             '+' => Ok(Some(self.create_token(TokenKind::Plus))),
             '*' => Ok(Some(self.create_token(TokenKind::Star))),
             '%' => Ok(Some(self.create_token(TokenKind::Percent))),
@@ -372,7 +379,6 @@ mod tests {
             34.inc()
         "#;
         let tokens = super::lex(input);
-        dbg!(&tokens);
         assert!(tokens.is_ok());
     }
 }

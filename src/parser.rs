@@ -236,6 +236,53 @@ impl<'a> Parser<'a> {
                     }),
                 });
             }
+            TokenKind::Fun => {
+                let fun_type_start = self.peek()?.span.start;
+                self.current += 1;
+
+                self.expect(
+                    TokenKind::LeftParen,
+                    "expect opening '(' for parameters in function type",
+                )?;
+                let mut parameters = Vec::new();
+                if self.peek()?.kind != TokenKind::RightParen {
+                    loop {
+                        parameters.push(self.parse_type()?);
+
+                        if self.peek()?.kind != TokenKind::Comma {
+                            break;
+                        } else {
+                            self.current += 1;
+                        }
+                    }
+                }
+                let rparen_token = self
+                    .expect(
+                        TokenKind::RightParen,
+                        "expect closing ')' after parameter list in function type",
+                    )?
+                    .clone();
+
+                let returns = if self.peek()?.kind == TokenKind::Arrow {
+                    self.current += 1;
+                    Some(Box::new(self.parse_type()?))
+                } else {
+                    None
+                };
+
+                typ = Some(ast::Type {
+                    span: fun_type_start..if let Some(return_type) = &returns {
+                        return_type.span.end
+                    } else {
+                        rparen_token.span.end
+                    },
+                    kind: ast::FunType {
+                        parameters,
+                        returns,
+                    }
+                    .into(),
+                })
+            }
             _ => {}
         }
 
@@ -661,9 +708,11 @@ impl<'a> Parser<'a> {
 
                 self.expect(TokenKind::RightParen, "missing closing ')'")?;
 
-                let return_type = match self.peek()?.kind {
-                    TokenKind::LeftBrace | TokenKind::Semicolon | TokenKind::For => None,
-                    _ => Some(self.parse_type()?),
+                let return_type = if self.peek()?.kind == TokenKind::Arrow {
+                    self.current += 1;
+                    Some(self.parse_type()?)
+                } else {
+                    None
                 };
 
                 let target_type = if let TokenKind::For = self.peek()?.kind {
